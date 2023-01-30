@@ -1,0 +1,2 @@
+source "$BR2_EXTERNAL_LIONESS_PROJ_PATH/package/softfido/Config.in"
+source "$BR2_EXTERNAL_LIONESS_PROJ_PATH/package/lioness/Config.in"

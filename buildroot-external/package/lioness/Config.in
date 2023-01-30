@@ -1,0 +1,8 @@
+config BR2_PACKAGE_LIONESS
+	bool "lioness"
+	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS
+	select BR2_PACKAGE_HOST_RUSTC
+	help
+	  Lioness provides user-unlock functionality for a (dm-crypt)
+	  encrypted storage area, subsequently exposed as a USB
+	  mass-storage device.

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+<style>
+html {
+  font-family: Verdana, Geneva, sans-serif;
+  background-color: #808080;
+}
+
+label, p {
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: 1px;
+}
+
+body {
+  margin: 0 auto;
+  color: #FFFFFF;
+  background-color: #000000;
+  padding: 0 20px 20px 20px;
+  border: 5px solid black;
+}
+
+fieldset {
+  margin-top: 30px;
+  margin-bottom: 30px;
+}
+
+input[type='checkbox'], input[type='password'] {
+  margin: 10px;
+  border: 0;
+  line-height: 2.5;
+  padding: 0 20px;
+  font-size: 20px;
+  text-align: left;
+  border-radius: 10px;
+  box-shadow: inset -2px -2px 3px rgba(255, 255, 255, .6),
+              inset 2px 2px 3px rgba(0, 0, 0, .6);
+}
+
+#submit {
+  margin: 5px;
+  border: 0;
+  line-height: 2.5;
+  padding: 0 40px;
+  font-size: 20px;
+  text-align: center;
+  color: #fff;
+  text-shadow: 1px 1px 1px #000;
+  border-radius: 10px;
+  background-color: rgba(220, 0, 0, 1);
+  background-image: linear-gradient(to top left,
+                                    rgba(0, 0, 0, .2),
+                                    rgba(0, 0, 0, .2) 30%,
+                                    rgba(0, 0, 0, 0));
+  box-shadow: inset 2px 2px 3px rgba(255, 255, 255, .6),
+              inset -2px -2px 3px rgba(0, 0, 0, .6);
+}
+
+#submit:hover {
+  background-color: rgba(255, 0, 0, 1);
+}
+
+#submit:active {
+  box-shadow: inset -2px -2px 3px rgba(255, 255, 255, .6),
+              inset 2px 2px 3px rgba(0, 0, 0, .6);
+}
+
+#sublog {
+  color: #808080;
+}
+
+</style>
+    <title>Lioness</title>
+  </head>
+  <body>
+  <form><fieldset>
+    <legend>Unlock Password</legend>
+    <input type="password" placeholder="Password" id="pass" minlength="8" required>
+    <input type="password" placeholder="Confirm Password" id="confirm" minlength="8" required>
+    <p id='pw_invalid'>Please ensure matching passwords, 8 characters or more in length.</p>
+    <p><b>Note: If you forget this password, your data will be lost!</b></p>
+  </fieldset></form>
+
+  <fieldset>
+    <legend>Encrypted drive features</legend>
+
+    <div>
+      <input type="checkbox" id="snapshot" name="snapshot" checked>
+      <label for="snapshot">Snapshot drive on each unlock</label>
+    </div>
+
+    <div>
+      <input type="checkbox" id="compr" name="compr">
+      <label for="compr">Transparent Compression</label>
+    </div>
+
+    <div>
+      <input type="checkbox" id="format" name="format" checked>
+      <label for="format">Format for first use</label>
+    </div>
+  </fieldset>
+
+  <p>
+    To apply these settings, save <i>lioness.txt</i> to the connected <i>lioness</i> USB drive.
+  </p>
+  <input type="submit" id="submit" value="Save" onclick="submitIni();">
+  <p id="sublog" />
+
+  <script type="text/javascript">
+  const pass = document.getElementById('pass');
+  pass.addEventListener('change', (e) => { validatePw(); });
+  const cnfm = document.getElementById('confirm');
+  cnfm.addEventListener('change', (e) => { validatePw(); });
+  function log(l) {
+    document.getElementById('sublog').innerHTML += `${l}<br>`;
+  }
+
+  function validatePw() {
+    const pv = pass.value;
+    if (pv.length >= 8 && pv === cnfm.value) {
+      document.getElementById('pw_invalid').style.opacity = 0;
+      return pv;
+    }
+    document.getElementById('pw_invalid').style.opacity = 1;
+    return null;
+  }
+
+  async function genKey(pw, salt) {
+    log(`+ encoding key material`);
+    const enc = new TextEncoder();
+    const keyMaterial = await window.crypto.subtle.importKey(
+      "raw",
+      enc.encode(pw),
+      "PBKDF2",
+      false,
+      ["deriveBits", "deriveKey"],
+    );
+    log(`+ deriving encryption key`);
+    const key = await window.crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        salt,
+        iterations: 600000,
+        hash: "SHA-256",
+      },
+      keyMaterial,
+      { "name": "AES-GCM", "length": 256},
+      true,
+      ["encrypt", "decrypt"], // needed for export only?
+    );
+
+    return window.crypto.subtle.exportKey("raw", key);
+  }
+
+  async function submitIni() {
+    const pw = validatePw();
+    if (pw === null) {
+      document.getElementById('pw_invalid').style.color = "red";
+      pass.select();
+      return;
+    }
+    const salt = window.crypto.getRandomValues(new Uint8Array(24));
+    let keyHex;
+    try {
+      const key = await genKey(pw, salt);
+      const keyArray = Array.from(new Uint8Array(key));
+      keyHex = keyArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    } catch (err) {
+      log(`- failed to generate encryption key: ${err.message}`);
+      return;
+    }
+    const saltArray = Array.from(salt);
+    const saltHex = saltArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    let ini = `payload = LionessFirstboot1
+key = ${keyHex}
+salt = ${saltHex}
+snapshot = ${document.getElementById('snapshot').checked}
+compression = ${document.getElementById('compr').checked}
+format = ${document.getElementById('format').checked}\n`;
+
+    log(`+ generating configuration`);
+    const encoded = new TextEncoder().encode(ini);
+    const hash = await crypto.subtle.digest('SHA-256', encoded);
+    const hashArray = Array.from(new Uint8Array(hash));
+    const hhex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    ini += `digest = SHA-256:${hhex}`
+    data_uri = "data:text/plain;charset=utf-8," + encodeURIComponent(ini);
+    let element = document.createElement("a");
+    element.setAttribute("href", data_uri);
+    element.setAttribute("download", "lioness.txt");
+    element.style.display = "none";
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+  }
+
+  </script>
+  </body>
+</html>

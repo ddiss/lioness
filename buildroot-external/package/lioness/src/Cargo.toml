@@ -1,0 +1,10 @@
+[package]
+name = "lioness"
+description = "encrypted storage unlock interface"
+version = "1.0.0"
+authors = ["David Disseldorp <ddiss@suse.de>"]
+edition = "2018"
+license = "GPL-3.0"
+
+[dependencies]
+fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
