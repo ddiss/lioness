@@ -6,8 +6,8 @@ unsupported.
 The aim of the Lioness project is to provide a system image for a linux-powered
 USB security key, which can run on commonly available hardware, such as the
 [NanoPi NEO2](https://linux-sunxi.org/FriendlyARM_NanoPi_NEO2).
-The image should be minimal in size and use mainline kernel + u-boot sources,
-powered by the [Buildroot](https://buildroot.org) build system.
+The image should be minimal in size and use mainline Linux kernel + u-boot
+sources, powered by the [Buildroot](https://buildroot.org) build system.
 
 
 ### Getting started
@@ -29,7 +29,7 @@ dd if=images/sdcard.img of=<sd-card-device> bs=1M
 
 The SD card can then be placed in a NanoPi NEO2 and booted. The image will boot
 to expose a USB mass-storage device, which contains a static file-backed
-configuration website. Upon configuration, the website allows the user to save
+configuration website. Once configured, the website allows the user to save
 the settings to a file. With the `/usr/bin/lioness` binary running on the
 board (it's not started by default), the configuration file will be
 automatically detected and validated, when saved to `lioness.txt`.
@@ -37,13 +37,14 @@ automatically detected and validated, when saved to `lioness.txt`.
 
 ### Work in progress
 
-Functionality to initialized and unlock the dm-crypt storage area has not yet
-been finilized. In addition to that, there is a long list of desired features:
+Functionality to initialize and unlock the dm-crypt storage area has not yet
+been finalized. In addition to that, there is a long list of desired features:
 - store salt in GPT uuid(?)
 - mkfs.btrfs dm-crypt area
 - mkfs.exfat file-on-btrfs
 - on open: handle snapshots (reflink file)
 - expose file-on-btrfs via USB
+- raw dm-crypt option for those who don't want thin provisioning / snapshots
 - FIDO2 / webauthn using softfido or an alternative
 - OS image update from static website
 - test, test, test!
@@ -52,7 +53,7 @@ been finilized. In addition to that, there is a long list of desired features:
 
 ### Debugging
 
-By default, the image provides boot logs via UART. A dhcp client starts on boot
+By default, the image provides boot logs via UART. A DHCP client starts on boot
 alongside an ssh server which can be accessed with root/root credentials.
 
 
@@ -60,4 +61,5 @@ alongside an ssh server which can be accessed with root/root credentials.
 
 Thanks to SUSE for allowing me to work on this project as part of
 [Hack Week 22](https://hackweek.opensuse.org/22/projects/usb-security-key-running-embedded-linux).
-Thanks for FriendlyArm for providing some NanoPi hardware free of charge.
+Thanks to sunxi mainline Linux and u-boot contributors.
+Thanks to FriendlyArm for providing some NanoPi hardware free of charge.
