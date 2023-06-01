@@ -163,52 +163,14 @@ fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
     };
 }
 
-// fatfs dev can be a loopback file or zram device. If the latter then set the
-// disksize via the corresponding sysfs zram path.
-fn parse_fs_dev(dev_path: Option<String>) -> io::Result<PathBuf> {
-    let dev = match dev_path {
-        Some(d) => PathBuf::from(d).canonicalize()?,
-        None => {
-            usage();
-            return Err(Error::from(ErrorKind::InvalidInput));
-        },
-    };
-
-    let mut is_zram = true;
-    for (i, os) in dev.iter().enumerate() {
-        let s = os.to_str().ok_or_else(|| Error::from(ErrorKind::InvalidInput))?;
-        if (i == 0 && s != "/") || (i == 1 && s != "dev") || (i == 2 && !s.starts_with("zram")) || (i > 2) {
-            is_zram = false;
-            break;
-        }
-    }
-    if is_zram {
-        let mut sys_zr = PathBuf::from("/sys/devices/virtual/block/");
-        sys_zr.push(dev.file_name().unwrap());
-        fs::write(sys_zr.join("reset"), b"1")?;
-        fs::write(sys_zr.join("disksize"), b"4M")?;
-    }
-    // else truncate file?
-
-    Ok(dev)
-}
-
-fn parse_configfs(configfs_path: Option<String>) -> io::Result<PathBuf> {
-    return match configfs_path {
-        Some(p) => PathBuf::from(p).canonicalize(),
-        None => {
-            usage();
-            return Err(Error::from(ErrorKind::InvalidInput));
-        },
-    }
-}
-
-fn init_fs(fatfs_dev: &PathBuf) -> io::Result<()> {
+// initialise FAT filesystem on fatfs_dev and return the canonicalized path
+fn init_fs(fatfs_dev: &str) -> io::Result<PathBuf> {
     let f = fs::OpenOptions::new().write(true)
                                   .read(true)
                                   .create(true)
                                   .truncate(false)
                                   .open(fatfs_dev)?;
+    f.set_len(4 * 1024 * 1024)?;
     let opts = fatfs::FormatVolumeOptions::new().volume_label(*b"Lioness\0\0\0\0");
     fatfs::format_volume(&f, opts)?;
     let fs = FileSystem::new(&f, FsOptions::new())?;
@@ -219,12 +181,14 @@ fn init_fs(fatfs_dev: &PathBuf) -> io::Result<()> {
 
     let mut file = root_dir.create_file("setup.html")?;
     file.write_all(include_bytes!("./setup.html"))?;
-    f.sync_data()
+    f.sync_data()?;
+
+    PathBuf::from(fatfs_dev).canonicalize()
 }
 
-fn init_musb(fatfs_dev: &PathBuf, configfs: &PathBuf) -> io::Result<PathBuf> {
+fn init_musb(fatfs_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
     // TODO perform configfs mount if needed
-    let cfs_usb = configfs.join("usb_gadget/confs");
+    let cfs_usb = PathBuf::from(configfs).join("usb_gadget/confs");
     fs::create_dir_all(cfs_usb.join("strings/0x409"))?;
     fs::create_dir_all(cfs_usb.join("functions/mass_storage.usb0/lun.0"))?;
     fs::create_dir_all(cfs_usb.join("configs/c.1/strings/0x409"))?;
@@ -271,21 +235,22 @@ fn init_musb(fatfs_dev: &PathBuf, configfs: &PathBuf) -> io::Result<PathBuf> {
     };
     fs::write(cfs_usb.join("UDC"), MUSB_UDC.as_bytes())?;
 
-    Ok(cfs_usb.join("functions/mass_storage.usb0/lun.0"))
+    cfs_usb.join("functions/mass_storage.usb0/lun.0").canonicalize()
 }
 
 fn main() -> io::Result<()> {
-    let dev = parse_fs_dev(env::args().nth(1))?;
-    let configfs = parse_configfs(env::args().nth(2))?;
-
-    init_fs(&dev)?;
-    let cfs_usb_lun = init_musb(&dev, &configfs)?;
+    if env::args().len() != 3 {
+        usage();
+        return Err(Error::from(ErrorKind::InvalidInput));
+    }
+    let fatfs_path = init_fs(&env::args().nth(1).unwrap())?;
+    let cfs_usb_lun = init_musb(&fatfs_path, &env::args().nth(2).unwrap())?;
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"heartbeat");
 
-    let mut f = match File::open(&dev) {
+    let mut f = match File::open(&fatfs_path) {
         Ok(f) => f,
         Err(e) => {
-            println!("Failed to open device {}: {}", dev.display(), e);
+            println!("Failed to open device {}: {}", fatfs_path.display(), e);
             return Err(e);
         },
     };
@@ -418,6 +383,10 @@ fn main() -> io::Result<()> {
     }
 
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"none");
+
+    // Unlink the fatfs backing file after processing to free up memory. It may
+    // still be locally mounted for testing.
+    fs::remove_file(fatfs_path)?;
 
     // TODO rest of app
     // - store salt (in GPT uuid?)
