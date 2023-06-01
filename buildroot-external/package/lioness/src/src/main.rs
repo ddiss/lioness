@@ -89,7 +89,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
                     println!("invalid: salt set multiple times");
                     return None;
                 }
-                if val.len() != 48 {
+                if val.len() != 64 {
                     println!("invalid: salt length {}", val.len());
                     return None;
                 }
