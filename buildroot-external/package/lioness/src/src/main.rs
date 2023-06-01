@@ -273,9 +273,21 @@ fn init_fs(fatfs_dev: &str, uuid_to_salt: &str) -> io::Result<PathBuf> {
     PathBuf::from(fatfs_dev).canonicalize()
 }
 
-fn init_musb(fatfs_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
+fn init_musb(lun_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
     // TODO perform configfs mount if needed
     let cfs_usb = PathBuf::from(configfs).join("usb_gadget/confs");
+
+    // attempt to teardown any existing mass storage LUN
+    match fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/removable"),
+              b"1") {
+        Err(_) => {},
+        Ok(_) => println!("ejected existing lun.0"),
+    };
+    match fs::remove_file(cfs_usb.join("configs/c.1/mass_storage.usb0")) {
+        Err(_) => {},
+        Ok(_) => println!("removed existing mass_storage.usb0"),
+    };
+
     fs::create_dir_all(cfs_usb.join("strings/0x409"))?;
     fs::create_dir_all(cfs_usb.join("functions/mass_storage.usb0/lun.0"))?;
     fs::create_dir_all(cfs_usb.join("configs/c.1/strings/0x409"))?;
@@ -307,7 +319,7 @@ fn init_musb(fatfs_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
     fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/removable"),
               b"1")?;
     fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/file"),
-              fatfs_dev.as_os_str().as_bytes())?;
+              lun_dev.as_os_str().as_bytes())?;
     fs::write(cfs_usb.join("configs/c.1/strings/0x409/configuration"),
               b"Config 1: mass-storage")?;
     fs::write(cfs_usb.join("configs/c.1/MaxPower"), b"500")?;
@@ -478,14 +490,99 @@ fn parse_kcli(proc_cmdline: &str) -> io::Result<Kcli> {
     Ok(kcli)
 }
 
+// might be able to use dm-init.ko in future, but for now...
+// FIXME don't hardcode dev/part
+fn dmsetup_crypt(partdev: String, key: Vec<u8>) -> io::Result<String> {
+    let mut sysblk_path = PathBuf::from("/sys/class/block/");
+    sysblk_path.push(&partdev);
+    sysblk_path.push("size");   // partdev size in blocks
+    let size_blocks = fs::read(sysblk_path)?;
+    let size_blocks_str = match str::from_utf8(&size_blocks) {
+        Err(_) => return Err(Error::from(ErrorKind::InvalidData)),
+        Ok(s) => s.trim_end_matches('\n'),
+    };
+
+    let key_str = match str::from_utf8(&key) {
+        Err(_) => return Err(Error::from(ErrorKind::InvalidData)),
+        Ok(s) => s,
+    };
+
+    let mut table_parm = String::from("0 ");
+    table_parm.push_str(&size_blocks_str);
+    table_parm.push_str(" crypt aes-cbc-essiv:sha256 ");
+    table_parm.push_str(&key_str);
+    table_parm.push_str(" 0 /dev/");
+    table_parm.push_str(&partdev);
+    table_parm.push_str(" 0");   // why?
+
+    let status = Command::new("dmsetup")
+        .args(["create", "crypty", "--table", &table_parm])
+        .status()
+        .expect("failed to execute process");
+    if !status.success() {
+        println!("dmsetup failed");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    // FIXME: don't assume dm-0 device name. use crypty when/if we have udev
+    Ok("/dev/dm-0".to_string())
+}
+
+fn btrfs_mkfs(dev: String) -> io::Result<()> {
+    let status = Command::new("mkfs.btrfs")
+        .args([dev])
+        .status()
+        .expect("failed to execute process");
+    if !status.success() {
+        println!("mkfs.btrfs failed");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    // FIXME: don't assume dm-0 device name. use crypty when/if we have udev
+    Ok(())
+}
+
+fn btrfs_mount(dev: String, compression: bool, mntpoint: String) -> io::Result<()> {
+    let mut args = vec!["-t", "btrfs"];
+    if compression {
+        args.extend(["-o", "compress-force=zstd"]);
+    }
+    args.push(&dev);
+    args.push(&mntpoint);
+    let status = Command::new("mount")
+        .args(args)
+        .status()
+        .expect("failed to execute process");
+    if !status.success() {
+        println!("btrfs mount failed");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    Ok(())
+}
+
+fn exfat_mkfs(dev: &PathBuf) -> io::Result<()> {
+    let status = Command::new("mkfs.exfat")
+        .args([dev])
+        .status()
+        .expect("failed to execute process");
+    if !status.success() {
+        println!("mkfs.exfat failed");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     if env::args().len() != 4 {
         usage();
         return Err(Error::from(ErrorKind::InvalidInput));
     }
+    let configfs = env::args().nth(2).unwrap();
     let kcli = parse_kcli(&env::args().nth(3).unwrap())?;
     let fatfs_path = init_fs(&env::args().nth(1).unwrap(), &kcli.uuid_to_salt)?;
-    let cfs_usb_lun = init_musb(&fatfs_path, &env::args().nth(2).unwrap())?;
+    let cfs_usb_lun = init_musb(&fatfs_path, &configfs)?;
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"heartbeat");
 
     let mut f = match File::open(&fatfs_path) {
