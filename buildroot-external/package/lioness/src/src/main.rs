@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 // Copyright (C) 2023 SUSE LLC
 
+use std::fs;
 use std::fs::File;
 use std::io::SeekFrom;
 use std::io::{self, prelude::*};
@@ -285,14 +286,9 @@ fn main() -> io::Result<()> {
         Some(sysfs_lun) => {
             // eject LUN, signaling that the config has been processed
             let p = PathBuf::from(sysfs_lun);
-            match File::create(p.join("forced_eject")) {
-                Ok(mut f) => {
-                    f.write_all(b"1")?;
-                    println!("configuration device ejected");
-                },
-                Err(e) => {
-                    println!("skipping eject, sysfs open failed: {}", e);
-                },
+            match fs::write(p.join("forced_eject"), b"1") {
+                Ok(_) => println!("configuration device ejected"),
+                Err(e) => println!("skipping eject, sysfs write failed: {}", e),
             };
         },
         None => {
