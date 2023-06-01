@@ -61,15 +61,17 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
     let mut payload_seen = false;
 
     // XXX not standard ini! We strictly require the format that was written by
-    // lioness.html
+    // lioness setup.html
     // TODO would be nice if we could construct these arrays at compile time
     // from the corresponding "key = " strings. For now they're vim compiled
     // via: s/\(.\)/b'\1', /g
     for l in conf_buf.split(|c| matches!(c, b'\n')) {
         //println!("tok {:?}", String::from_utf8_lossy(&l));
         match l {
-            [b'p', b'a', b'y', b'l', b'o', b'a', b'd', .. ] => {
-                // already checked header, just confirm one instance
+            [b'p', b'a', b'y', b'l', b'o', b'a', b'd', b' ', b'=', b' ',
+             b'L', b'i', b'o', b'n', b'e', b's', b's',
+             b'F', b'i', b'r', b's', b't', b'b', b'o', b'o', b't', b'1'] => {
+                // key and value prefix already checked, need to match suffix
                 if payload_seen {
                     println!("invalid: payload set multiple times");
                     return None;
@@ -192,7 +194,8 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
 // returns a Conf if found and validated. ErrorKind::NotFound means that a valid
 // conf payload wasn't found (retry). Any other error means don't retry.
 fn parse_conf_payload(buf: &mut [u8]) -> io::Result<Conf> {
-        let payload_hdr = b"payload = LionessFirstboot1";
+        // value suffix differs for firstboot setup and unlock configs
+        let payload_hdr = b"payload = Lioness";
         if buf.starts_with(payload_hdr) {
             println!("payload header valid");
         } else {
