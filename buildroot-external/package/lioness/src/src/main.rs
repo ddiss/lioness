@@ -227,9 +227,11 @@ fn parse_conf_payload(buf: &mut [u8]) -> io::Result<Conf> {
         };
 }
 
+// set a timeout on first call. subsequent calls subtract sleep time from tout
+// and return false if lapsed. TODO make timeout duration configurable.
 fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
     if retry_tout.is_none() {
-        *retry_tout = Some(time::Duration::from_secs(60 * 60)); // first loop
+        *retry_tout = Some(time::Duration::from_secs(24 * 60 * 60));
         return true;
     }
 
