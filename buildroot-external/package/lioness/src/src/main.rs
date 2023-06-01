@@ -13,6 +13,7 @@ use std::os::unix;
 use std::os::unix::ffi::OsStrExt;
 use std::process::{Command,Stdio};
 use std::path::PathBuf;
+use std::str;
 
 use fatfs::{FileSystem, FsOptions};
 //
@@ -28,7 +29,7 @@ pub const MUSB_UDC: &'static str = match option_env!("MUSB_UDC") {
 };
 
 fn usage() {
-    println!("Usage: lioness <fatfs-device> <configfs-path>");
+    println!("Usage: lioness <fatfs-device> <configfs-path> <proc-cmdline>");
 }
 
 struct Conf {
@@ -71,7 +72,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
                     return None;
                 }
                 payload_seen = true;
-            }
+            },
             [b'k', b'e', b'y', b' ', b'=', b' ', val @ .. ] => {
                 if key.is_some() {
                     println!("invalid: key set multiple times");
@@ -238,11 +239,164 @@ fn init_musb(fatfs_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
     cfs_usb.join("functions/mass_storage.usb0/lun.0").canonicalize()
 }
 
+struct Kcli {
+    firstboot: bool,
+    disk_uuid: String,
+    os_uuid: String,
+    user_uuid: String,
+    user_size: String,
+    uuid_to_salt: String,
+}
+
+fn push_kcli_part_uuid(uuid: &[u8], mut js_array: Option<&mut String>) -> io::Result<String> {
+    let mut uuidstr = String::with_capacity(36);
+
+    for (i, c) in uuid.iter().enumerate() {
+        if i > 35 {
+                return Err(Error::from(ErrorKind::InvalidData));
+        }
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            if *c != b'-' {
+                return Err(Error::from(ErrorKind::InvalidData));
+            }
+        } else {
+            match c {
+                b'a'..=b'f' => {},
+                b'A'..=b'F' => {},
+                b'0'..=b'9' => {},
+                _ => return Err(Error::from(ErrorKind::InvalidData)),
+            }
+            const LEN_PER_VAL: usize = "0x##,".len();
+            match js_array {
+                // js values start at index of 1 due to preceeding '[' or ','
+                Some(ref mut s) if s.len() % LEN_PER_VAL == 1 => {
+                    s.push_str("0x");
+                    s.push(char::from(*c));
+                },
+                Some(ref mut s) if s.len() % LEN_PER_VAL == 4 => {
+                    s.push(char::from(*c));
+                    s.push(',');
+                },
+                Some(s) => panic!("unexpected js_array input {}", s), // alread checked
+                None => {},
+            };
+        }
+        uuidstr.push(char::from(*c));
+    }
+    if uuidstr.len() != 36 {
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    Ok(uuidstr)
+}
+
+// uuid_disk=11017e55-d15c-b007-ed00-7686722c6a20;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef08fbea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;
+fn parse_kcli_parts(parts: &[u8], kcli: &mut Kcli) -> io::Result<()> {
+    for part in parts.split(|c| matches!(c, b';')) {
+        let mut this_uuid: Option<String> = None;
+        let mut this_size: Option<String> = None;
+        let mut in_boot = false;
+        let mut in_user = false;
+
+        for k in part.split(|c| matches!(c, b',')) {
+            match k {
+                [b'u', b'u', b'i', b'd', b'_', b'd', b'i', b's', b'k', b'=',
+                 val @ ..] => {
+                    kcli.disk_uuid = push_kcli_part_uuid(val, None)
+                        .or_else(|e| Err(e))?;
+                    println!("got disk uuid {}", kcli.disk_uuid);
+                },
+                b"name=boot" => in_boot = true,
+                b"name=user" => in_user = true,
+                [b'u', b'u', b'i', b'd', b'=', val @ ..] => {
+                    this_uuid = match push_kcli_part_uuid(val, Some(&mut kcli.uuid_to_salt)) {
+                        Err(e) => return Err(e),
+                        Ok(u) => Some(u),
+                    };
+                },
+                [b's', b'i', b'z', b'e', b'=', val @ ..] => {
+                    this_size = match str::from_utf8(val) {
+                        Err(_) => return Err(Error::from(ErrorKind::InvalidData)),
+                        Ok(u) => Some(u.to_string()),
+                    };
+                },
+                [ _unused @ .. ] => {},
+            }
+        }
+        if in_boot == true {
+            if in_user == true || !kcli.user_uuid.is_empty() {
+                // strict ordering is required for uuid_to_salt
+                return Err(Error::from(ErrorKind::InvalidData));
+            }
+            kcli.os_uuid = this_uuid.ok_or(Error::from(ErrorKind::InvalidData))?;
+            println!("got os uuid {}", kcli.os_uuid);
+        } else if in_user == true {
+            if in_boot == true || kcli.os_uuid.is_empty() {
+                return Err(Error::from(ErrorKind::InvalidData));
+            }
+            kcli.user_uuid = this_uuid.ok_or(Error::from(ErrorKind::InvalidData))?;
+            kcli.user_size = this_size.ok_or(Error::from(ErrorKind::InvalidData))?;
+            println!("got user uuid {} size {}", kcli.user_uuid, kcli.user_size);
+        }
+    }
+    Ok(())
+}
+
+fn parse_kcli(proc_cmdline: &str) -> io::Result<Kcli> {
+    let kcmdline = fs::read(proc_cmdline)?;
+    let mut kcli = Kcli{
+        firstboot: false,
+        disk_uuid: String::new(),
+        os_uuid: String::new(),
+        user_uuid: String::new(),
+        user_size: String::new(),
+        // setup password salt is made up of the concatinated bootloader
+        // randomized OS and user partition uuids, which are generated by uboot
+        // on firstboot. It's converted directly into a js format array with hex
+        // values, i.e. [0x##,0x##,...] -> plus one for leading bracket.
+        uuid_to_salt: String::with_capacity(1 + (32 + 32) * 5),
+    };
+    let mut parts_seen = false;
+    kcli.uuid_to_salt.push('[');
+
+    for w in kcmdline.split(|c| matches!(c, b' ')) {
+        match w {
+            b"lioness.firstboot" => kcli.firstboot = true,
+            [b'l', b'i', b'o', b'n', b'e', b's', b's',
+             b'.', b'p', b'a', b'r', b't', b's', b'=', val @ ..] => {
+                if parts_seen {
+                    println!("multiple lioness.parts kcli parameters");
+                    return Err(Error::from(ErrorKind::InvalidData));
+                }
+                parse_kcli_parts(&val, &mut kcli)?;
+                parts_seen = true;
+            },
+            [ _unused @ .. ] => {},
+        }
+    }
+
+    if parts_seen == false {
+        println!("lioness.parts kcli parameter missing");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+    if kcli.disk_uuid.is_empty() || kcli.os_uuid.is_empty()
+        || kcli.user_uuid.is_empty() || kcli.user_size.is_empty() {
+        println!("lioness.parts kcli fields missing");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+    let c = kcli.uuid_to_salt.pop();
+    assert_eq!(c.unwrap(), ',');
+    kcli.uuid_to_salt.push(']');
+
+    Ok(kcli)
+}
+
 fn main() -> io::Result<()> {
-    if env::args().len() != 3 {
+    if env::args().len() != 4 {
         usage();
         return Err(Error::from(ErrorKind::InvalidInput));
     }
+    let kcli = parse_kcli(&env::args().nth(3).unwrap())?;
     let fatfs_path = init_fs(&env::args().nth(1).unwrap())?;
     let cfs_usb_lun = init_musb(&fatfs_path, &env::args().nth(2).unwrap())?;
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"heartbeat");
@@ -398,4 +552,95 @@ fn main() -> io::Result<()> {
     // - FIDO2
     // - unit tests!
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // create a lioness-selftest-XXXXX directory in the current working dir.
+    fn tmpdir() -> PathBuf {
+        let mut buf = [0u8; 16];
+        let mut s = String::from("lioness-selftest-");
+        fs::File::open("/dev/urandom")
+            .unwrap()
+            .read_exact(&mut buf)
+            .unwrap();
+        for i in &buf {
+            s.push_str(&format!("{:02x}", i).to_string());
+        }
+
+        fs::create_dir(&s).unwrap();
+        return PathBuf::from(s);
+    }
+
+    #[test]
+    fn test_kernel_cmdline_parser() {
+        let t = tmpdir();
+        let tf = t.join("cmdline");
+
+        fs::write(&tf,
+            b"lioness.parts=uuid_disk=11017e55-d15c-b007-ed00-7686722c6a20;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef08fbea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;")
+            .expect("failed to write tmpfile");
+        let kcli = parse_kcli(&tf.to_str().unwrap()).expect("failed to parse kcli");
+        assert_eq!(kcli.firstboot, false);
+        assert_eq!(kcli.disk_uuid, "11017e55-d15c-b007-ed00-7686722c6a20");
+        assert_eq!(kcli.os_uuid, "5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e");
+        assert_eq!(kcli.user_uuid, "6bf3d7d3-7633-4a9a-b43b-174c842e5cc7");
+        assert_eq!(kcli.user_size, "0xef08fbea0");
+        assert_eq!(kcli.uuid_to_salt,
+                   concat!("[0x5c,0x6a,0x6b,0x7d,0xcc,0xab,0x4c,0x14,",
+                           "0xae,0x06,0xe8,0xa9,0x30,0xd4,0x8f,0x8e,", // join
+                           "0x6b,0xf3,0xd7,0xd3,0x76,0x33,0x4a,0x9a,0xb4,0x3b,",
+                           "0x17,0x4c,0x84,0x2e,0x5c,0xc7]"));
+
+        fs::write(&tf,
+            b"quiet lioness.firstboot splash=silent lioness.parts=uuid_disk=11017e55-d15c-b007-ed00-7686722c6a20;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef070bea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;")
+            .expect("failed to write tmpfile");
+        let kcli = parse_kcli(&tf.to_str().unwrap()).expect("failed to parse kcli");
+        assert_eq!(kcli.firstboot, true);
+        assert_eq!(kcli.disk_uuid, "11017e55-d15c-b007-ed00-7686722c6a20");
+        assert_eq!(kcli.os_uuid, "5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e");
+        assert_eq!(kcli.user_uuid, "6bf3d7d3-7633-4a9a-b43b-174c842e5cc7");
+        assert_eq!(kcli.user_size, "0xef070bea0");
+
+        // invalid: no disk uuid
+        fs::write(&tf,
+            b"quiet lioness.firstboot splash=silent lioness.parts=name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef070bea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;")
+            .expect("failed to write tmpfile");
+        assert!(parse_kcli(&tf.to_str().unwrap()).is_err());
+
+        // invalid: bad uuid format
+        fs::write(&tf,
+            b"lioness.parts=uuid_disk=11017e55d15cb007ed007686722c6a20;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef08fbea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;")
+            .expect("failed to write tmpfile");
+        assert!(parse_kcli(&tf.to_str().unwrap()).is_err());
+
+        // invalid: bad uuid char
+        fs::write(&tf,
+            b"lioness.parts=uuid_disk=nothexxx-d15c-b007-ed00-7686722c6a20;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef08fbea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;")
+            .expect("failed to write tmpfile");
+        assert!(parse_kcli(&tf.to_str().unwrap()).is_err());
+
+        // invalid: short uuid
+        fs::write(&tf,
+            b"lioness.parts=uuid_disk=11017e55-d15c-b007-ed00;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef08fbea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;")
+            .expect("failed to write tmpfile");
+        assert!(parse_kcli(&tf.to_str().unwrap()).is_err());
+
+        // invalid: long uuid
+        fs::write(&tf,
+            b"lioness.parts=uuid_disk=11017e55-d15c-b007-ed00-7686722c6a204;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;name=user,start=0x2100000,size=0xef08fbea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;")
+            .expect("failed to write tmpfile");
+        assert!(parse_kcli(&tf.to_str().unwrap()).is_err());
+
+        // invalid: user before OS
+        fs::write(&tf,
+            b"lioness.parts=uuid_disk=11017e55-d15c-b007-ed00-7686722c6a20;name=user,start=0x2100000,size=0xef08fbea0,uuid=6bf3d7d3-7633-4a9a-b43b-174c842e5cc7;name=boot,start=0x100000,size=0x2000000,uuid=5c6a6b7d-ccab-4c14-ae06-e8a930d48f8e;")
+            .expect("failed to write tmpfile");
+        assert!(parse_kcli(&tf.to_str().unwrap()).is_err());
+
+        fs::remove_file(tf).expect("failed to remove tmpfile");
+        fs::remove_dir(t).expect("failed to remove tmpdir");
+    }
 }
