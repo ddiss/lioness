@@ -37,6 +37,7 @@ struct Conf {
     key: Vec<u8>,
     salt: Vec<u8>,
     date: String,
+    img_size: u64,
     snapshot: bool,
     compression: bool,
     exfat_format: bool,
@@ -57,6 +58,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
     let mut key: Option<Vec<u8>> = None;
     let mut salt: Option<Vec<u8>> = None;
     let (mut date, mut snap, mut compr, mut format) = (None, None, None, None);
+    let mut img_size = None;
     let mut payload_seen = false;
 
     // XXX not standard ini! We strictly require the format that was written by
@@ -114,6 +116,26 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
                     Ok(d) => Some(d),
                 };
             },
+            [b'i', b'm', b'g', b'_', b's', b'i', b'z', b'e', b' ', b'=', b' ', val @ .. ]  => {
+                if img_size.is_some() {
+                    println!("invalid: img_size set multiple times");
+                    return None;
+                }
+                let img_size_str = match String::from_utf8(val.to_vec()) {
+                    Err(_) => {
+                        println!("bad img_size string");
+                        return None;
+                    },
+                    Ok(s) => s,
+                };
+                img_size = match img_size_str.parse::<u64>() {
+                    Err(_) => {
+                        println!("bad img_size value");
+                        return None;
+                    },
+                    Ok(v) => Some(v),
+                };
+            },
             [b's', b'n', b'a', b'p', b's', b'h', b'o', b't',
              b' ', b'=', b' ', val @ .. ] => {
                 if snap.is_some() {
@@ -152,7 +174,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
             },
         }
     }
-    if key.is_none() || salt.is_none() || date.is_none() || snap.is_none() || compr.is_none() || format.is_none() {
+    if key.is_none() || salt.is_none() || date.is_none() || img_size.is_none() || snap.is_none() || compr.is_none() || format.is_none() {
         println!("not all expected config keys present");
         return None;
     }
@@ -161,6 +183,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
             key: key.unwrap(),
             salt: salt.unwrap(),
             date: date.unwrap(),
+            img_size: img_size.unwrap(),
             snapshot: snap.unwrap(),
             compression: compr.unwrap(),
             exfat_format: format.unwrap()
@@ -738,7 +761,7 @@ fn main() -> io::Result<()> {
                                           .create(true)
                                           .truncate(false)
                                           .open(&img_path)?;
-            f.set_len(10 * 1024 * 1024 * 1024)?;
+            f.set_len(validated_conf.img_size)?;
         }
         if validated_conf.exfat_format {
             exfat_mkfs(&img_path)?;
@@ -756,12 +779,8 @@ fn main() -> io::Result<()> {
     }
 
     let _img_usb_lun = init_musb(&img_path, &configfs)?;
+    // TODO expose or cleanup snapshots as requested
 
-
-    // TODO rest of app
-    // - on open: hand snapshots (reflink file)
-    // - FIDO2
-    // - unit tests!
     Ok(())
 }
 
@@ -908,10 +927,11 @@ mod tests {
 key = 4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0
 salt = 74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2
 date = 2023-05-17T20:49:17.335Z
+img_size = 54670659
 snapshot = true
 compression = false
 format = true
-digest = SHA-256:8d287d3e3d5abcb66e6e79139a7c82addc468dbfcd8d1b5e494d20fa16880b69")
+digest = SHA-256:eec12eaea4ac05447df33657a4cf27ba965003d20fba432baa3968d7e93baf4a")
             .expect("failed to write conf file");
         let mut pl = fs::read(&tf).expect("read failed");
         let conf = parse_conf_payload(&mut pl)
@@ -921,6 +941,7 @@ digest = SHA-256:8d287d3e3d5abcb66e6e79139a7c82addc468dbfcd8d1b5e494d20fa16880b6
         assert_eq!(str::from_utf8(&conf.salt).unwrap(),
                    "74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2");
         assert_eq!(conf.date, "2023-05-17T20:49:17.335Z");
+        assert_eq!(conf.img_size, 54670659);
         assert_eq!(conf.snapshot, true);
         assert_eq!(conf.compression, false);
         assert_eq!(conf.exfat_format, true);
