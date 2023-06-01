@@ -6,7 +6,7 @@ start() {
 	echo "Starting Lioness..."
 	start-stop-daemon -S -q -p /var/run/lioness.pid \
 		--background --exec /usr/bin/lioness \
-		-- /tmp/img /sys/kernel/config
+		-- /tmp/img /sys/kernel/config /proc/cmdline
 }
 
 stop() {
