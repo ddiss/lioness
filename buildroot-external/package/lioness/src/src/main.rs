@@ -895,6 +895,10 @@ fn main() -> io::Result<()> {
             exfat_mkfs(&img_path)?;
         }
     } else {
+        let manage = match validated_conf.conft {
+            ConfType::Unlock(m) => m,
+            _ => panic!("non unlock conf type for !firstboot"),
+        };
         let vol_meta = fs::metadata(&vol_path)?;
         if vol_meta.ino() == 256 {
             if btrfs_snapshot(&vol_path, &validated_conf.date).is_err() {
@@ -903,6 +907,10 @@ fn main() -> io::Result<()> {
             } else {
                 println!("snapshot {} created", validated_conf.date);
             }
+        }
+
+        if manage {
+            println!("TODO post-setup management UI not yet implemented");
         }
     }
 
