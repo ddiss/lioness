@@ -10,7 +10,6 @@ use std::io::{Error, ErrorKind};
 use std::{thread, time};
 use std::env;
 use std::os::unix;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::process::{Command,Stdio};
 use std::path::PathBuf;
@@ -291,7 +290,7 @@ fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
 
 // initialise FAT filesystem on fatfs_dev and return the canonicalized path
 fn init_fs(fatfs_dev: &str, uuid_to_salt: &str, user_part_size: &str,
-           firstboot: bool) -> io::Result<PathBuf> {
+           firstboot: bool) -> io::Result<()> {
     let f = fs::OpenOptions::new().write(true)
                                   .read(true)
                                   .create(true)
@@ -319,12 +318,10 @@ fn init_fs(fatfs_dev: &str, uuid_to_salt: &str, user_part_size: &str,
     write!(file, "const template_is_firstboot = {};\n", firstboot)?;
     file.write_all(include_bytes!("setup.js.template"))?;
     file.write_all(include_bytes!("setup.html.post_js.template"))?;
-    f.sync_data()?;
-
-    PathBuf::from(fatfs_dev).canonicalize()
+    f.sync_data()
 }
 
-fn init_musb(lun_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
+fn init_musb(lun_dev: &str, configfs: &str) -> io::Result<PathBuf> {
     // TODO perform configfs mount if needed
     let cfs_usb = PathBuf::from(configfs).join("usb_gadget/confs");
 
@@ -370,7 +367,7 @@ fn init_musb(lun_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
     fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/removable"),
               b"1")?;
     fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/file"),
-              lun_dev.as_os_str().as_bytes())?;
+              lun_dev.as_bytes())?;
     fs::write(cfs_usb.join("configs/c.1/strings/0x409/configuration"),
               b"Config 1: mass-storage")?;
     fs::write(cfs_usb.join("configs/c.1/MaxPower"), b"500")?;
@@ -592,13 +589,8 @@ fn btrfs_mkfs(dev: String) -> io::Result<()> {
     Ok(())
 }
 
-fn btrfs_mount(dev: String, compression: bool, mntpoint: String) -> io::Result<()> {
-    let mut opts = String::from("sync,noatime");
-    if compression {
-        opts.push_str(",compress-force=zstd");
-    }
-    let mut args = vec!["-t", "btrfs", "-o"];
-    args.push(&opts);
+fn btrfs_mount(dev: String, mntpoint: String) -> io::Result<()> {
+    let mut args = vec!["-t", "btrfs", "-o", "sync,noatime"];
     args.push(&dev);
     args.push(&mntpoint);
     let status = Command::new("mount")
@@ -628,6 +620,21 @@ fn btrfs_create_subvolume(vol_path: &str) -> io::Result<()> {
     Ok(())
 }
 
+// TODO use libbtrfs-util bindings
+fn btrfs_set_compression(img_path: &str) -> io::Result<()> {
+    let args = vec!["property", "set", img_path, "compression", "zstd"];
+    let status = Command::new("btrfs")
+        .args(args)
+        .status()
+        .expect("failed to execute process");
+    if !status.success() {
+        println!("btrfs snapshot failed");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    Ok(())
+}
+
 fn btrfs_snapshot(vol_path: &str, snap_name: &String) -> io::Result<()> {
     let args = vec!["subvolume", "snapshot", "-r", vol_path, snap_name];
     let status = Command::new("btrfs")
@@ -642,9 +649,9 @@ fn btrfs_snapshot(vol_path: &str, snap_name: &String) -> io::Result<()> {
     Ok(())
 }
 
-fn exfat_mkfs(dev: &PathBuf) -> io::Result<()> {
+fn exfat_mkfs(img_path: &str) -> io::Result<()> {
     let status = Command::new("mkfs.exfat")
-        .args([dev])
+        .args([img_path])
         .status()
         .expect("failed to execute process");
     if !status.success() {
@@ -660,17 +667,17 @@ fn main() -> io::Result<()> {
         usage();
         return Err(Error::from(ErrorKind::InvalidInput));
     }
+    let fatfs_path = env::args().nth(1).unwrap();
     let configfs = env::args().nth(2).unwrap();
     let kcli = parse_kcli(&env::args().nth(3).unwrap())?;
-    let fatfs_path = init_fs(&env::args().nth(1).unwrap(), &kcli.uuid_to_salt,
-                             &kcli.user_size, kcli.firstboot)?;
+    init_fs(&fatfs_path, &kcli.uuid_to_salt, &kcli.user_size, kcli.firstboot)?;
     let cfs_usb_lun = init_musb(&fatfs_path, &configfs)?;
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"heartbeat");
 
     let mut f = match File::open(&fatfs_path) {
         Ok(f) => f,
         Err(e) => {
-            println!("Failed to open device {}: {}", fatfs_path.display(), e);
+            println!("Failed to open device {}: {}", fatfs_path, e);
             return Err(e);
         },
     };
@@ -747,9 +754,9 @@ fn main() -> io::Result<()> {
     }
 
     fs::create_dir_all("/mnt/crypt")?;
-    btrfs_mount(crypt_dev, validated_conf.compression, "/mnt/crypt".to_string())?;
+    btrfs_mount(crypt_dev, "/mnt/crypt".to_string())?;
     let vol_path = "/mnt/crypt/vol/";
-    let img_path = PathBuf::from("/mnt/crypt/vol/disk.img");
+    let img_path = "/mnt/crypt/vol/disk.img";
 
     if kcli.firstboot {
         if validated_conf.snapshot {
@@ -768,6 +775,9 @@ fn main() -> io::Result<()> {
                                           .truncate(false)
                                           .open(&img_path)?;
             f.set_len(validated_conf.img_size)?;
+        }
+        if validated_conf.compression {
+            btrfs_set_compression(&img_path)?;
         }
         if validated_conf.exfat_format {
             exfat_mkfs(&img_path)?;
@@ -887,9 +897,9 @@ mod tests {
         let uuid_salt = "[0xba,0xd0,0x5a,0x17]";
         let user_part_size = "0xef070bea0";
 
-        let fatfs_path = init_fs(tf.to_str().unwrap(),
-                                 &uuid_salt, &user_part_size, false).expect("init_fs failed");
-        let contents = fs::read(fatfs_path).expect("failed to read fatfs img");
+        init_fs(tf.to_str().unwrap(), &uuid_salt, &user_part_size, false)
+            .expect("init_fs failed");
+        let contents = fs::read(tf.to_str().unwrap()).expect("failed to read fatfs img");
         let cur: Cursor<Vec<u8>> = Cursor::new(contents);
         let fat = FileSystem::new(cur, FsOptions::new()).expect("fatfs new failed");
 
@@ -931,9 +941,9 @@ mod tests {
         let uuid_salt = "[0xba,0xd0,0x5a,0x18]";
         let user_part_size = "0xef070bea1";
 
-        let fatfs_path = init_fs(tf.to_str().unwrap(),
-                                 &uuid_salt, &user_part_size, true).expect("init_fs failed");
-        let contents = fs::read(fatfs_path).expect("failed to read fatfs img");
+        init_fs(tf.to_str().unwrap(), &uuid_salt, &user_part_size, true)
+            .expect("init_fs failed");
+        let contents = fs::read(tf.to_str().unwrap()).expect("failed to read fatfs img");
         let cur: Cursor<Vec<u8>> = Cursor::new(contents);
         let fat = FileSystem::new(cur, FsOptions::new()).expect("fatfs new failed");
 
