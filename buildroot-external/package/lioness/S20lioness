@@ -5,7 +5,7 @@ start() {
 	truncate -s 4M /tmp/img
 	echo "Starting Lioness..."
 	start-stop-daemon -S -q -p /var/run/lioness.pid \
-		--background --exec /usr/bin/lioness \
+		--exec /usr/bin/lioness \
 		-- /tmp/img /sys/kernel/config /proc/cmdline
 }
 
