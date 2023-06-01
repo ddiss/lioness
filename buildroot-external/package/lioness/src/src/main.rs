@@ -347,7 +347,7 @@ fn init_musb(lun_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
     fs::write(cfs_usb.join("bcdDevice"), b"0x0090")?;   // v0.9.0
 
     fs::write(cfs_usb.join("strings/0x409/manufacturer"), b"openSUSE")?;
-    fs::write(cfs_usb.join("strings/0x409/product"), b"lioness config")?;
+    fs::write(cfs_usb.join("strings/0x409/product"), b"lioness")?;
 
     // convert (hopefully) unique SoC SID to hex for use as serial number
     match File::open("/sys/bus/nvmem/devices/sunxi-sid0/nvmem") {
@@ -541,7 +541,6 @@ fn parse_kcli(proc_cmdline: &str) -> io::Result<Kcli> {
 }
 
 // might be able to use dm-init.ko in future, but for now...
-// FIXME don't hardcode dev/part
 fn dmsetup_crypt(partdev: String, key: Vec<u8>) -> io::Result<String> {
     let mut sysblk_path = PathBuf::from("/sys/class/block/");
     sysblk_path.push(&partdev);
