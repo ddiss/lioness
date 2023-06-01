@@ -121,6 +121,23 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
     Some(Conf{ key: key?, salt: salt?, snapshot: snap?, compression: compr?, exfat_format: format? })
 }
 
+fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
+    if retry_tout.is_none() {
+        *retry_tout = Some(time::Duration::from_secs(60 * 15)); // first loop
+        return true;
+    }
+
+    let sleep_duration = time::Duration::from_secs(1);
+    thread::sleep(sleep_duration);
+    return match retry_tout.unwrap().checked_sub(sleep_duration) {
+        Some(d) => {
+            *retry_tout = Some(d);
+            true
+        },
+        None => false,
+    };
+}
+
 fn main() -> io::Result<()> {
     let dev = match env::args().nth(1) {
         Some(d) => d,
@@ -136,11 +153,12 @@ fn main() -> io::Result<()> {
             return Err(e);
         },
     };
-    let retry_sleep = time::Duration::from_millis(1000);
+    let mut retry_tout: Option<time::Duration> = None;
     let mut validated_conf: Option<Conf> = None;
 
-    while validated_conf.is_none() {
+    while validated_conf.is_none() && validate_retry(&mut retry_tout) {
         let mut contents = vec![0; 4*1024*1024];
+
         f.seek(SeekFrom::Start(0))?;
         f.read_exact(&mut contents)?;
         // TODO: check for block layer write while reading
@@ -149,7 +167,6 @@ fn main() -> io::Result<()> {
             Ok(fs) => fs,
             Err(e) => {
                 println!("retry due to FS error: {}", e);
-                thread::sleep(retry_sleep);
                 continue;
             },
         };
@@ -158,7 +175,6 @@ fn main() -> io::Result<()> {
             Ok(fs) => fs,
             Err(e) => {
                 println!("retry due to FS open error: {}", e);
-                thread::sleep(retry_sleep);
                 continue;
             },
         };
@@ -169,7 +185,6 @@ fn main() -> io::Result<()> {
             },
             Err(e) => {
                 println!("retry due to FS read error: {}", e);
-                thread::sleep(retry_sleep);
                 continue;
             },
         };
@@ -179,7 +194,6 @@ fn main() -> io::Result<()> {
             println!("payload header valid");
         } else {
             println!("retry due to invalid conf payload header");
-            thread::sleep(retry_sleep);
             continue;
         }
 
@@ -188,7 +202,6 @@ fn main() -> io::Result<()> {
         let digest_len = digest_pfx.len() + 64;
         if buf.len() < digest_len {
             println!("retry due to invalid conf length");
-            thread::sleep(retry_sleep);
             continue;
         }
         buf.rotate_right(digest_len);
@@ -197,7 +210,6 @@ fn main() -> io::Result<()> {
             println!("digest prefix valid");
         } else {
             println!("retry due to invalid digest prefix");
-            thread::sleep(retry_sleep);
             continue;
         }
 
@@ -205,14 +217,12 @@ fn main() -> io::Result<()> {
             Some(v) => {
                 if !v.is_ascii() {
                     println!("retry due to invalid digest content");
-                    thread::sleep(retry_sleep);
                     continue;
                 }
                 v
             },
             None => {
                 println!("retry due to invalid digest content");
-                thread::sleep(retry_sleep);
                 continue;
             }
         };
@@ -233,7 +243,6 @@ fn main() -> io::Result<()> {
             println!("retry due to digest mismatch: {} vs calculated {}",
                      String::from_utf8_lossy(sha256),
                      String::from_utf8_lossy(&output.stdout));
-            thread::sleep(retry_sleep);
             continue;
         }
         // remove trailing newline before now-trimmed digest
@@ -248,14 +257,16 @@ fn main() -> io::Result<()> {
         };
 
         validated_conf = match parse_digested_conf(&conf_notrail) {
-            Some(c) => Some(c),
+            Some(c) => {
+                println!("user configuration integrity checked and validated");
+                Some(c)
+            },
             // XXX abort on invalid (but SHA validated) conf for now
             None => return Err(Error::from(ErrorKind::InvalidData)),
         };
     }
 
-    println!("user configuration integrity checked and validated");
-
+    // Eject regardless of timeout or proper validated conf
     match env::args().nth(2) {
         Some(sysfs_lun) => {
             // eject LUN, signaling that the config has been processed
@@ -274,6 +285,11 @@ fn main() -> io::Result<()> {
             println!("skipping eject, sysfs path not provided");
         },
     };
+
+    if validated_conf.is_none() {
+        println!("timed out waiting for valid configuration");
+        return Err(Error::from(ErrorKind::InvalidData))
+    }
 
     // TODO rest of app
     // - store salt (in GPT uuid?)
