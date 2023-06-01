@@ -147,6 +147,86 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
         })
 }
 
+// returns a Conf if found and validated. ErrorKind::NotFound means that a valid
+// conf payload wasn't found (retry). Any other error means don't retry.
+fn parse_conf_payload(buf: &mut [u8]) -> io::Result<Conf> {
+        let payload_hdr = b"payload = LionessFirstboot1";
+        if buf.starts_with(payload_hdr) {
+            println!("payload header valid");
+        } else {
+            println!("retry due to invalid conf payload header");
+            return Err(Error::from(ErrorKind::NotFound));
+        }
+
+        // XXX not split_at() from end, so just rotate and take it from start
+		let digest_pfx = b"digest = SHA-256:";
+        let digest_len = digest_pfx.len() + 64;
+        if buf.len() < digest_len {
+            println!("retry due to invalid conf length");
+            return Err(Error::from(ErrorKind::NotFound));
+        }
+        buf.rotate_right(digest_len);
+        let (digest, conf) = buf.split_at(digest_len);
+        if digest.starts_with(digest_pfx) {
+            println!("digest prefix valid");
+        } else {
+            println!("retry due to invalid digest prefix");
+            return Err(Error::from(ErrorKind::NotFound));
+        }
+
+        let sha256 = match digest.get(digest_pfx.len()..) {
+            Some(v) => {
+                if !v.is_ascii() {
+                    println!("retry due to invalid digest content");
+                    return Err(Error::from(ErrorKind::NotFound));
+                }
+                v
+            },
+            None => {
+                println!("retry due to invalid digest content");
+                return Err(Error::from(ErrorKind::NotFound));
+            }
+        };
+
+        // TODO optimize and use kernl AF_ALG to calculate checksum
+        let mut proc = Command::new("sha256sum")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("failed to execute process");
+        {
+            let mut stdin = proc.stdin.take().unwrap();
+            stdin.write_all(conf).expect("Failed to write to stdin");
+        }
+        let output = proc.wait_with_output().unwrap();
+
+        if &output.stdout[..sha256.len()] != sha256 {
+            println!("retry due to digest mismatch: {} vs calculated {}",
+                     String::from_utf8_lossy(sha256),
+                     String::from_utf8_lossy(&output.stdout));
+            return Err(Error::from(ErrorKind::NotFound));
+        }
+        // remove trailing newline before now-trimmed digest
+        let conf_notrail = match conf.split_last() {
+            Some((l, e)) => {
+                if l != &b'\n' {
+                    return Err(Error::from(ErrorKind::InvalidData));
+                }
+                e
+            },
+            None => return Err(Error::from(ErrorKind::InvalidData)),
+        };
+
+        return match parse_digested_conf(&conf_notrail) {
+            Some(c) => {
+                println!("user configuration integrity checked and validated");
+                Ok(c)
+            },
+            // XXX abort on invalid (but SHA validated) conf for now
+            None => Err(Error::from(ErrorKind::InvalidData)),
+        };
+}
+
 fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
     if retry_tout.is_none() {
         *retry_tout = Some(time::Duration::from_secs(60 * 60)); // first loop
@@ -452,80 +532,10 @@ fn main() -> io::Result<()> {
             },
         };
 
-        let payload_hdr = b"payload = LionessFirstboot1";
-        if buf.starts_with(payload_hdr) {
-            println!("payload header valid");
-        } else {
-            println!("retry due to invalid conf payload header");
-            continue;
-        }
-
-        // XXX not split_at() from end, so just rotate and take it from start
-		let digest_pfx = b"digest = SHA-256:";
-        let digest_len = digest_pfx.len() + 64;
-        if buf.len() < digest_len {
-            println!("retry due to invalid conf length");
-            continue;
-        }
-        buf.rotate_right(digest_len);
-        let (digest, conf) = buf.split_at(digest_len);
-        if digest.starts_with(digest_pfx) {
-            println!("digest prefix valid");
-        } else {
-            println!("retry due to invalid digest prefix");
-            continue;
-        }
-
-        let sha256 = match digest.get(digest_pfx.len()..) {
-            Some(v) => {
-                if !v.is_ascii() {
-                    println!("retry due to invalid digest content");
-                    continue;
-                }
-                v
-            },
-            None => {
-                println!("retry due to invalid digest content");
-                continue;
-            }
-        };
-
-        // TODO optimize and use kernl AF_ALG to calculate checksum
-        let mut proc = Command::new("sha256sum")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("failed to execute process");
-        {
-            let mut stdin = proc.stdin.take().unwrap();
-            stdin.write_all(conf).expect("Failed to write to stdin");
-        }
-        let output = proc.wait_with_output().unwrap();
-
-        if &output.stdout[..sha256.len()] != sha256 {
-            println!("retry due to digest mismatch: {} vs calculated {}",
-                     String::from_utf8_lossy(sha256),
-                     String::from_utf8_lossy(&output.stdout));
-            continue;
-        }
-        // remove trailing newline before now-trimmed digest
-        let conf_notrail = match conf.split_last() {
-            Some((l, e)) => {
-                if l != &b'\n' {
-                    return Err(Error::from(ErrorKind::InvalidData));
-                }
-                e
-            },
-            None => return Err(Error::from(ErrorKind::InvalidData)),
-        };
-
-        validated_conf = match parse_digested_conf(&conf_notrail) {
-            Some(c) => {
-                println!("user configuration integrity checked and validated");
-                Some(c)
-            },
-            // XXX abort on invalid (but SHA validated) conf for now
-            None => return Err(Error::from(ErrorKind::InvalidData)),
+        validated_conf = match parse_conf_payload(&mut buf) {
+            Ok(c) => Some(c),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => None, // retry
+            Err(e) => return Err(e),    // non-retriable 
         };
     }
 
@@ -679,4 +689,56 @@ mod tests {
         fs::remove_dir(t).expect("failed to remove tmpdir");
     }
 
+    #[test]
+    fn test_conf() {
+        // sample password. Don't waste energy brute-forcing :)
+        let t = tmpdir();
+        let tf = t.join("lioness.conf");
+
+        fs::write(&tf, b"payload = LionessFirstboot1
+key = 4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0
+salt = 74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2
+snapshot = true
+compression = false
+format = true
+digest = SHA-256:e6e0f6ad96d8863df2f3fec343d2c7371cb43804cf3c29389bc591162a8f1f0e")
+            .expect("failed to write conf file");
+        let mut pl = fs::read(&tf).expect("read failed");
+        let conf = parse_conf_payload(&mut pl)
+            .expect("failed to parse conf payload");
+        assert_eq!(str::from_utf8(&conf.key).unwrap(),
+                   "4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0");
+        assert_eq!(str::from_utf8(&conf.salt).unwrap(),
+                   "74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2");
+        assert_eq!(conf.snapshot, true);
+        assert_eq!(conf.compression, false);
+        assert_eq!(conf.exfat_format, true);
+
+        // digest mismatch
+        fs::write(&tf, b"payload = LionessFirstboot1
+key = 4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0
+salt = 74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2
+snapshot = true
+compression = false
+format = true
+digest = SHA-256:fffffffffffffffffff3fec343d2c7371cb43804cf3c29389bc591162a8f1f0e")
+            .expect("failed to write conf file");
+        let mut pl = fs::read(&tf).expect("read failed");
+        assert!(parse_conf_payload(&mut pl).is_err());
+
+        // bad payload header (checked before digest)
+        fs::write(&tf, b"payload = LionessLastboot
+key = 4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0
+salt = 74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2
+snapshot = true
+compression = false
+format = true
+digest = SHA-256:e6e0f6ad96d8863df2f3fec343d2c7371cb43804cf3c29389bc591162a8f1f0e")
+            .expect("failed to write conf file");
+        let mut pl = fs::read(&tf).expect("read failed");
+        assert!(parse_conf_payload(&mut pl).is_err());
+
+        fs::remove_file(tf).expect("failed to remove tmpfile");
+        fs::remove_dir(t).expect("failed to remove tmpdir");
+    }
 }
