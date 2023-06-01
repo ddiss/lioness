@@ -174,19 +174,19 @@ fn main() -> io::Result<()> {
         f.read_exact(&mut contents)?;
         // TODO: check for block layer write while reading
         let cur: Cursor<Vec<u8>> = Cursor::new(contents);
-        let fs = match FileSystem::new(cur, FsOptions::new()) {
-            Ok(fs) => fs,
+        let fat = match FileSystem::new(cur, FsOptions::new()) {
+            Ok(fat) => fat,
             Err(e) => {
                 println!("retry due to FS error: {}", e);
                 continue;
             },
         };
-        let root_dir = fs.root_dir();
+        let root_dir = fat.root_dir();
         // /lioness.txt is currently used as the config file path, as Android
         // automatically adds a ".txt" extension to any download flagged
         // "text/plain".
         let mut file = match root_dir.open_file("lioness.txt") {
-            Ok(fs) => fs,
+            Ok(f) => f,
             Err(e) => {
                 println!("retry due to FS open error: {}", e);
                 continue;
