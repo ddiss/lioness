@@ -12,12 +12,8 @@ LIONESS_SITE_METHOD = local
 LIONESS_LICENSE = GPL-3.0
 
 define LIONESS_INSTALL_INIT_SYSV
-	$(INSTALL) -D -m 0755 $(LIONESS_PKGDIR)/setup.sh \
-		$(TARGET_DIR)/app/setup.sh
-	$(INSTALL) -D -m 0755 $(LIONESS_PKGDIR)/setup.html \
-		$(TARGET_DIR)/app/setup.html
-	$(INSTALL) -D -m 0755 $(LIONESS_PKGDIR)/S20lioness-setup \
-		$(TARGET_DIR)/etc/init.d/S20lioness-setup
+	$(INSTALL) -D -m 0755 $(LIONESS_PKGDIR)/S20lioness \
+		$(TARGET_DIR)/etc/init.d/S20lioness
 endef
 
 $(eval $(cargo-package))

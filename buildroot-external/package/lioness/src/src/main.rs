@@ -9,13 +9,26 @@ use std::io::Cursor;
 use std::io::{Error, ErrorKind};
 use std::{thread, time};
 use std::env;
+use std::os::unix;
+use std::os::unix::ffi::OsStrExt;
 use std::process::{Command,Stdio};
 use std::path::PathBuf;
 
 use fatfs::{FileSystem, FsOptions};
+//
+// TODO these build env vars should become mandatory for each board
+pub const STATUS_LED_PATH: &'static str = match option_env!("STATUS_LED_PATH") {
+    Some(v) => v,
+    None => "/sys/class/leds/nanopi:blue:status",
+};
+
+pub const MUSB_UDC: &'static str = match option_env!("MUSB_UDC") {
+    Some(v) => v,
+    None => "musb-hdrc.1.auto",
+};
 
 fn usage() {
-    println!("Usage: lioness <fatfs-device> [conf-sysfs-usb-lun]");
+    println!("Usage: lioness <fatfs-device> <configfs-path>");
 }
 
 struct Conf {
@@ -150,18 +163,129 @@ fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
     };
 }
 
-fn main() -> io::Result<()> {
-    let dev = match env::args().nth(1) {
-        Some(d) => d,
+// fatfs dev can be a loopback file or zram device. If the latter then set the
+// disksize via the corresponding sysfs zram path.
+fn parse_fs_dev(dev_path: Option<String>) -> io::Result<PathBuf> {
+    let dev = match dev_path {
+        Some(d) => PathBuf::from(d).canonicalize()?,
         None => {
             usage();
             return Err(Error::from(ErrorKind::InvalidInput));
         },
     };
+
+    let mut is_zram = true;
+    for (i, os) in dev.iter().enumerate() {
+        let s = os.to_str().ok_or_else(|| Error::from(ErrorKind::InvalidInput))?;
+        if (i == 0 && s != "/") || (i == 1 && s != "dev") || (i == 2 && !s.starts_with("zram")) || (i > 2) {
+            is_zram = false;
+            break;
+        }
+    }
+    if is_zram {
+        let mut sys_zr = PathBuf::from("/sys/devices/virtual/block/");
+        sys_zr.push(dev.file_name().unwrap());
+        fs::write(sys_zr.join("reset"), b"1")?;
+        fs::write(sys_zr.join("disksize"), b"4M")?;
+    }
+    // else truncate file?
+
+    Ok(dev)
+}
+
+fn parse_configfs(configfs_path: Option<String>) -> io::Result<PathBuf> {
+    return match configfs_path {
+        Some(p) => PathBuf::from(p).canonicalize(),
+        None => {
+            usage();
+            return Err(Error::from(ErrorKind::InvalidInput));
+        },
+    }
+}
+
+fn init_fs(fatfs_dev: &PathBuf) -> io::Result<()> {
+    let f = fs::OpenOptions::new().write(true)
+                                  .read(true)
+                                  .create(true)
+                                  .truncate(false)
+                                  .open(fatfs_dev)?;
+    let opts = fatfs::FormatVolumeOptions::new().volume_label(*b"Lioness\0\0\0\0");
+    fatfs::format_volume(&f, opts)?;
+    let fs = FileSystem::new(&f, FsOptions::new())?;
+
+    let root_dir = fs.root_dir();
+    // avoid Android creating one automatically. TODO: flag hidden
+    root_dir.create_dir("LOST.DIR")?;
+
+    let mut file = root_dir.create_file("setup.html")?;
+    file.write_all(include_bytes!("./setup.html"))?;
+    f.sync_data()
+}
+
+fn init_musb(fatfs_dev: &PathBuf, configfs: &PathBuf) -> io::Result<PathBuf> {
+    // TODO perform configfs mount if needed
+    let cfs_usb = configfs.join("usb_gadget/confs");
+    fs::create_dir_all(cfs_usb.join("strings/0x409"))?;
+    fs::create_dir_all(cfs_usb.join("functions/mass_storage.usb0/lun.0"))?;
+    fs::create_dir_all(cfs_usb.join("configs/c.1/strings/0x409"))?;
+    fs::write(cfs_usb.join("idVendor"), b"0x1d6b")?;    // Linux Foundation
+    fs::write(cfs_usb.join("idProduct"),
+        b"0x1d6b")?;    // Multifunction Composite Gadget
+    fs::write(cfs_usb.join("bcdDevice"), b"0x0090")?;   // v0.9.0
+
+    fs::write(cfs_usb.join("strings/0x409/manufacturer"), b"openSUSE")?;
+    fs::write(cfs_usb.join("strings/0x409/product"), b"lioness config")?;
+
+    // convert (hopefully) unique SoC SID to hex for use as serial number
+    match File::open("/sys/bus/nvmem/devices/sunxi-sid0/nvmem") {
+        Ok(mut sid) => {
+            let mut sidbuf = vec![0; 16];
+            sid.read_exact(&mut sidbuf)?;
+            let hex: String = sidbuf.iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<String>>().join("");
+            fs::write(cfs_usb.join("strings/0x409/serialnumber"), hex)?;
+        },
+        Err(_) => println!("sunxi nvmem not available for serialnumber"),
+    };
+
+    fs::write(cfs_usb.join("functions/mass_storage.usb0/stall"), b"1")?;
+    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/cdrom"), b"0")?;
+    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/ro"), b"0")?;
+    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/nofua"), b"0")?;
+    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/removable"),
+              b"1")?;
+    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/file"),
+              fatfs_dev.as_os_str().as_bytes())?;
+    fs::write(cfs_usb.join("configs/c.1/strings/0x409/configuration"),
+              b"Config 1: mass-storage")?;
+    fs::write(cfs_usb.join("configs/c.1/MaxPower"), b"500")?;
+    match unix::fs::symlink(cfs_usb.join("functions/mass_storage.usb0"),
+                            cfs_usb.join("configs/c.1/mass_storage.usb0")) {
+        Err(e) => {
+            if e.kind() != ErrorKind::AlreadyExists {
+                return Err(e);
+            }
+        },
+        Ok(_) => (),
+    };
+    fs::write(cfs_usb.join("UDC"), MUSB_UDC.as_bytes())?;
+
+    Ok(cfs_usb.join("functions/mass_storage.usb0/lun.0"))
+}
+
+fn main() -> io::Result<()> {
+    let dev = parse_fs_dev(env::args().nth(1))?;
+    let configfs = parse_configfs(env::args().nth(2))?;
+
+    init_fs(&dev)?;
+    let cfs_usb_lun = init_musb(&dev, &configfs)?;
+    let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"heartbeat");
+
     let mut f = match File::open(&dev) {
         Ok(f) => f,
         Err(e) => {
-            println!("Failed to open device {}: {}", dev, e);
+            println!("Failed to open device {}: {}", dev.display(), e);
             return Err(e);
         },
     };
@@ -282,18 +406,9 @@ fn main() -> io::Result<()> {
     }
 
     // Eject regardless of timeout or proper validated conf
-    match env::args().nth(2) {
-        Some(sysfs_lun) => {
-            // eject LUN, signaling that the config has been processed
-            let p = PathBuf::from(sysfs_lun);
-            match fs::write(p.join("forced_eject"), b"1") {
-                Ok(_) => println!("configuration device ejected"),
-                Err(e) => println!("skipping eject, sysfs write failed: {}", e),
-            };
-        },
-        None => {
-            println!("skipping eject, sysfs path not provided");
-        },
+    match fs::write(cfs_usb_lun.join("forced_eject"), b"1") {
+        Ok(_) => println!("configuration device ejected"),
+        Err(e) => println!("skipping eject, sysfs write failed: {}", e),
     };
 
     if validated_conf.is_none() {
@@ -301,6 +416,8 @@ fn main() -> io::Result<()> {
         let _ = fs::write("/proc/sysrq-trigger", b"o");
         return Err(Error::from(ErrorKind::InvalidData))
     }
+
+    let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"none");
 
     // TODO rest of app
     // - store salt (in GPT uuid?)
