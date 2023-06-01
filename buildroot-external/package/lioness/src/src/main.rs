@@ -306,7 +306,11 @@ fn init_fs(fatfs_dev: &str, uuid_to_salt: &str, user_part_size: &str,
     // avoid Android creating one automatically. TODO: flag hidden
     root_dir.create_dir("LOST.DIR")?;
 
-    let mut file = root_dir.create_file("setup.html")?;
+    let fname = match firstboot {
+        true => "setup.html",
+        false => "unlock.html",
+    };
+    let mut file = root_dir.create_file(fname)?;
     file.write_all(include_bytes!("setup.html.pre_js.template"))?;
     write!(file, "const template_uboot_salt = new Uint8Array({});\n",
            uuid_to_salt)?;
@@ -890,7 +894,7 @@ mod tests {
         let fat = FileSystem::new(cur, FsOptions::new()).expect("fatfs new failed");
 
         let root_dir = fat.root_dir();
-        let mut f = root_dir.open_file("setup.html").expect("html open failed");
+        let mut f = root_dir.open_file("unlock.html").expect("html open failed");
         let mut buf = vec![];
         f.read_to_end(&mut buf).expect("failed to read html");
         assert!(buf.starts_with(b"<!doctype html>"));
@@ -910,6 +914,49 @@ mod tests {
 
         let firstboot_off: usize = part_size_off + user_part_size_js.len();
         let firstboot_js = String::from("const template_is_firstboot = false;\n");
+        assert_eq!(str::from_utf8(&buf[firstboot_off..firstboot_off + firstboot_js.len()]).unwrap(),
+                   firstboot_js);
+
+        assert!(root_dir.open_file("lioness.txt").is_err());
+
+        fs::remove_file(tf).expect("failed to remove tmpfile");
+        fs::remove_dir(t).expect("failed to remove tmpdir");
+    }
+
+    #[test]
+    fn test_mkfatfs_firstboot() {
+        let t = tmpdir();
+        let tf = t.join("fatfs.img");
+        let uuid_salt = "[0xba,0xd0,0x5a,0x18]";
+        let user_part_size = "0xef070bea1";
+
+        let fatfs_path = init_fs(tf.to_str().unwrap(),
+                                 &uuid_salt, &user_part_size, true).expect("init_fs failed");
+        let contents = fs::read(fatfs_path).expect("failed to read fatfs img");
+        let cur: Cursor<Vec<u8>> = Cursor::new(contents);
+        let fat = FileSystem::new(cur, FsOptions::new()).expect("fatfs new failed");
+
+        let root_dir = fat.root_dir();
+        let mut f = root_dir.open_file("setup.html").expect("html open failed");
+        let mut buf = vec![];
+        f.read_to_end(&mut buf).expect("failed to read html");
+        assert!(buf.starts_with(b"<!doctype html>"));
+        const SALT_OFF: usize = include_bytes!("setup.html.pre_js.template").len();
+        let mut salt_js = String::from("const template_uboot_salt = new Uint8Array(");
+        salt_js.push_str(uuid_salt);
+        salt_js.push_str(");\n");
+        assert_eq!(str::from_utf8(&buf[SALT_OFF..SALT_OFF + salt_js.len()]).unwrap(),
+                   salt_js);
+
+        let part_size_off: usize = SALT_OFF + salt_js.len();
+        let mut user_part_size_js = String::from("const template_user_part_size = ");
+        user_part_size_js.push_str(user_part_size);
+        user_part_size_js.push_str(";\n");
+        assert_eq!(str::from_utf8(&buf[part_size_off..part_size_off + user_part_size_js.len()]).unwrap(),
+                   user_part_size_js);
+
+        let firstboot_off: usize = part_size_off + user_part_size_js.len();
+        let firstboot_js = String::from("const template_is_firstboot = true;\n");
         assert_eq!(str::from_utf8(&buf[firstboot_off..firstboot_off + firstboot_js.len()]).unwrap(),
                    firstboot_js);
 
