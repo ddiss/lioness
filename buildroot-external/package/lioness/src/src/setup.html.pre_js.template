@@ -1,0 +1,114 @@
+<!doctype html>
+<!--
+SPDX-License-Identifier: GPL-3.0
+Copyright (C) 2023 SUSE LLC
+-->
+<html lang="en">
+  <head>
+<style>
+html {
+  font-family: Verdana, Geneva, sans-serif;
+  background-color: #808080;
+}
+
+label, p {
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: 1px;
+}
+
+body {
+  margin: 0 auto;
+  color: #FFFFFF;
+  background-color: #000000;
+  padding: 0 20px 20px 20px;
+  border: 5px solid black;
+}
+
+fieldset {
+  margin-top: 30px;
+  margin-bottom: 30px;
+}
+
+input[type='checkbox'], input[type='password'] {
+  margin: 10px;
+  border: 0;
+  line-height: 2.5;
+  padding: 0 20px;
+  font-size: 20px;
+  text-align: left;
+  border-radius: 10px;
+  box-shadow: inset -2px -2px 3px rgba(255, 255, 255, .6),
+              inset 2px 2px 3px rgba(0, 0, 0, .6);
+}
+
+#submit {
+  margin: 5px;
+  border: 0;
+  line-height: 2.5;
+  padding: 0 40px;
+  font-size: 20px;
+  text-align: center;
+  color: #fff;
+  text-shadow: 1px 1px 1px #000;
+  border-radius: 10px;
+  background-color: rgba(220, 0, 0, 1);
+  background-image: linear-gradient(to top left,
+                                    rgba(0, 0, 0, .2),
+                                    rgba(0, 0, 0, .2) 30%,
+                                    rgba(0, 0, 0, 0));
+  box-shadow: inset 2px 2px 3px rgba(255, 255, 255, .6),
+              inset -2px -2px 3px rgba(0, 0, 0, .6);
+}
+
+#submit:hover {
+  background-color: rgba(255, 0, 0, 1);
+}
+
+#submit:active {
+  box-shadow: inset -2px -2px 3px rgba(255, 255, 255, .6),
+              inset 2px 2px 3px rgba(0, 0, 0, .6);
+}
+
+#sublog {
+  color: #808080;
+}
+
+</style>
+    <title>Lioness</title>
+  </head>
+  <body>
+  <form><fieldset>
+    <legend>Unlock Password</legend>
+    <input type="password" placeholder="Password" id="pass" minlength="8" required>
+    <input type="password" placeholder="Confirm Password" id="confirm" minlength="8" required>
+    <p id='pw_invalid'>Please ensure matching passwords, 8 characters or more in length.</p>
+    <p><b>Note: If you forget this password, your data will be lost!</b></p>
+  </fieldset></form>
+
+  <fieldset>
+    <legend>Encrypted drive features</legend>
+
+    <div>
+      <input type="checkbox" id="snapshot" name="snapshot" checked>
+      <label for="snapshot">Snapshot drive on each unlock</label>
+    </div>
+
+    <div>
+      <input type="checkbox" id="compr" name="compr">
+      <label for="compr">Transparent Compression</label>
+    </div>
+
+    <div>
+      <input type="checkbox" id="format" name="format" checked>
+      <label for="format">Format for first use</label>
+    </div>
+  </fieldset>
+
+  <p>
+    To apply these settings, save <i>lioness.txt</i> to the connected <i>lioness</i> USB drive.
+  </p>
+  <input type="submit" id="submit" value="Save" onclick="submitIni();">
+  <p id="sublog" />
+
+  <script type="text/javascript">

@@ -165,7 +165,7 @@ fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
 }
 
 // initialise FAT filesystem on fatfs_dev and return the canonicalized path
-fn init_fs(fatfs_dev: &str) -> io::Result<PathBuf> {
+fn init_fs(fatfs_dev: &str, uuid_to_salt: &str) -> io::Result<PathBuf> {
     let f = fs::OpenOptions::new().write(true)
                                   .read(true)
                                   .create(true)
@@ -181,7 +181,11 @@ fn init_fs(fatfs_dev: &str) -> io::Result<PathBuf> {
     root_dir.create_dir("LOST.DIR")?;
 
     let mut file = root_dir.create_file("setup.html")?;
-    file.write_all(include_bytes!("./setup.html"))?;
+    file.write_all(include_bytes!("setup.html.pre_js.template"))?;
+    write!(file, "const template_uboot_salt = new Uint8Array({});\n",
+           uuid_to_salt)?;
+    file.write_all(include_bytes!("setup.js.template"))?;
+    file.write_all(include_bytes!("setup.html.post_js.template"))?;
     f.sync_data()?;
 
     PathBuf::from(fatfs_dev).canonicalize()
@@ -248,7 +252,8 @@ struct Kcli {
     uuid_to_salt: String,
 }
 
-fn push_kcli_part_uuid(uuid: &[u8], mut js_array: Option<&mut String>) -> io::Result<String> {
+fn push_kcli_part_uuid(uuid: &[u8],
+                       mut js_array: Option<&mut String>) -> io::Result<String> {
     let mut uuidstr = String::with_capacity(36);
 
     for (i, c) in uuid.iter().enumerate() {
@@ -397,7 +402,7 @@ fn main() -> io::Result<()> {
         return Err(Error::from(ErrorKind::InvalidInput));
     }
     let kcli = parse_kcli(&env::args().nth(3).unwrap())?;
-    let fatfs_path = init_fs(&env::args().nth(1).unwrap())?;
+    let fatfs_path = init_fs(&env::args().nth(1).unwrap(), &kcli.uuid_to_salt)?;
     let cfs_usb_lun = init_musb(&fatfs_path, &env::args().nth(2).unwrap())?;
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"heartbeat");
 
@@ -643,4 +648,35 @@ mod tests {
         fs::remove_file(tf).expect("failed to remove tmpfile");
         fs::remove_dir(t).expect("failed to remove tmpdir");
     }
+
+    #[test]
+    fn test_mkfatfs() {
+        let t = tmpdir();
+        let tf = t.join("fatfs.img");
+        let uuid_salt = "[0xba,0xd0,0x5a,0x17]";
+
+        let fatfs_path = init_fs(tf.to_str().unwrap(),
+                                 &uuid_salt).expect("init_fs failed");
+        let contents = fs::read(fatfs_path).expect("failed to read fatfs img");
+        let cur: Cursor<Vec<u8>> = Cursor::new(contents);
+        let fat = FileSystem::new(cur, FsOptions::new()).expect("fatfs new failed");
+
+        let root_dir = fat.root_dir();
+        let mut f = root_dir.open_file("setup.html").expect("html open failed");
+        let mut buf = vec![];
+        f.read_to_end(&mut buf).expect("failed to read html");
+        assert!(buf.starts_with(b"<!doctype html>"));
+        const SALT_OFF: usize = include_bytes!("setup.html.pre_js.template").len();
+        let mut salt_js = String::from("const template_uboot_salt = new Uint8Array(");
+        salt_js.push_str(uuid_salt);
+        salt_js.push_str(");");
+        assert_eq!(str::from_utf8(&buf[SALT_OFF..SALT_OFF + salt_js.len()]).unwrap(),
+                   salt_js);
+
+        assert!(root_dir.open_file("lioness.txt").is_err());
+
+        fs::remove_file(tf).expect("failed to remove tmpfile");
+        fs::remove_dir(t).expect("failed to remove tmpdir");
+    }
+
 }

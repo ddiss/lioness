@@ -1,0 +1,86 @@
+const pass = document.getElementById('pass');
+pass.addEventListener('change', (e) => { validatePw(); });
+const cnfm = document.getElementById('confirm');
+cnfm.addEventListener('change', (e) => { validatePw(); });
+function log(l) {
+  document.getElementById('sublog').innerHTML += `${l}<br>`;
+}
+
+function validatePw() {
+  const pv = pass.value;
+  if (pv.length >= 8 && pv === cnfm.value) {
+    document.getElementById('pw_invalid').style.opacity = 0;
+    return pv;
+  }
+  document.getElementById('pw_invalid').style.opacity = 1;
+  return null;
+}
+
+async function genKey(pw, salt) {
+  log(`+ encoding key material`);
+  const enc = new TextEncoder();
+  const keyMaterial = await window.crypto.subtle.importKey(
+    "raw",
+    enc.encode(pw),
+    "PBKDF2",
+    false,
+    ["deriveBits", "deriveKey"],
+  );
+  log(`+ deriving encryption key`);
+  const key = await window.crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations: 600000,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    { "name": "AES-GCM", "length": 256},
+    true,
+    ["encrypt", "decrypt"], // needed for export only?
+  );
+
+  return window.crypto.subtle.exportKey("raw", key);
+}
+
+async function submitIni() {
+  const pw = validatePw();
+  if (pw === null) {
+    document.getElementById('pw_invalid').style.color = "red";
+    pass.select();
+    return;
+  }
+  const salt = window.crypto.getRandomValues(new Uint8Array(24));
+  let keyHex;
+  try {
+    const key = await genKey(pw, salt);
+    const keyArray = Array.from(new Uint8Array(key));
+    keyHex = keyArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (err) {
+    log(`- failed to generate encryption key: ${err.message}`);
+    return;
+  }
+  const saltArray = Array.from(salt);
+  const saltHex = saltArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  let ini = `payload = LionessFirstboot1
+key = ${keyHex}
+salt = ${saltHex}
+snapshot = ${document.getElementById('snapshot').checked}
+compression = ${document.getElementById('compr').checked}
+format = ${document.getElementById('format').checked}\n`;
+
+  log(`+ generating configuration`);
+  const encoded = new TextEncoder().encode(ini);
+  const hash = await crypto.subtle.digest('SHA-256', encoded);
+  const hashArray = Array.from(new Uint8Array(hash));
+  const hhex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  ini += `digest = SHA-256:${hhex}`
+  data_uri = "data:text/plain;charset=utf-8," + encodeURIComponent(ini);
+  let element = document.createElement("a");
+  element.setAttribute("href", data_uri);
+  element.setAttribute("download", "lioness.txt");
+  element.style.display = "none";
+  document.body.appendChild(element);
+  element.click();
+  document.body.removeChild(element);
+}
