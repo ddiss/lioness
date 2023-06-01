@@ -413,13 +413,17 @@ fn init_fs(fatfs_dev: &str, uuid_to_salt: &str, user_part_size: &str,
     // avoid Android creating one automatically. TODO: flag hidden
     root_dir.create_dir("LOST.DIR")?;
 
-    let fname = match firstboot {
-        true => "setup.html",
-        false => "unlock.html",
-    };
-    let mut file = root_dir.create_file(fname)?;
-    file.write_all(include_bytes!("setup.html.head.template"))?;
-    file.write_all(include_bytes!("setup.html.pre_js.template"))?;
+    let html_head = include_bytes!("setup.html.head.template");
+    let mut file;
+    if firstboot {
+            file = root_dir.create_file("setup.html")?;
+            file.write_all(html_head)?;
+            file.write_all(include_bytes!("setup.html.pre_js.template"))?;
+    } else {
+            file = root_dir.create_file("unlock.html")?;
+            file.write_all(html_head)?;
+            file.write_all(include_bytes!("unlock.html.pre_js.temlplate"))?;
+    }
     write!(file, "const template_uboot_salt = new Uint8Array({});\n",
            uuid_to_salt)?;
     write!(file, "const template_user_part_size = {};\n", user_part_size)?;
@@ -1029,7 +1033,7 @@ mod tests {
         f.read_to_end(&mut buf).expect("failed to read html");
         assert!(buf.starts_with(b"<!doctype html>"));
         const SALT_OFF: usize = include_bytes!("setup.html.head.template").len()
-                                + include_bytes!("setup.html.pre_js.template").len();
+                                + include_bytes!("unlock.html.pre_js.temlplate").len();
         let mut salt_js = String::from("const template_uboot_salt = new Uint8Array(");
         salt_js.push_str(uuid_salt);
         salt_js.push_str(");\n");
