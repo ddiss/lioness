@@ -297,7 +297,8 @@ fn main() -> io::Result<()> {
     };
 
     if validated_conf.is_none() {
-        println!("timed out waiting for valid configuration");
+        println!("timed out waiting for valid configuration, attempting shutdown");
+        let _ = fs::write("/proc/sysrq-trigger", b"o");
         return Err(Error::from(ErrorKind::InvalidData))
     }
 
