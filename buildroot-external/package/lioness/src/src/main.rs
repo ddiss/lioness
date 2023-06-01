@@ -59,7 +59,7 @@ fn from_bool(v: &[u8]) -> Option<bool> {
             println!("invalid bool val {}", String::from_utf8_lossy(v));
             None
         },
-    };  // TODO macroize?
+    };
 }
 
 fn parse_setup_conf(conf_buf: &[u8]) -> Option<Conf> {
@@ -433,15 +433,18 @@ fn init_fs(fatfs_dev: &str, uuid_to_salt: &str, user_part_size: &str,
     f.sync_data()
 }
 
-fn init_musb(lun_dev: &str, configfs: &str) -> io::Result<PathBuf> {
+fn init_musb(lun_dev: &str, configfs: &str, lun: u64) -> io::Result<PathBuf> {
     // TODO perform configfs mount if needed
     let cfs_usb = PathBuf::from(configfs).join("usb_gadget/confs");
+    let mut cfs_lun_subdir = String::from("functions/mass_storage.usb0/lun.");
+    cfs_lun_subdir.push_str(&lun.to_string());
+    let cfs_lun = cfs_usb.join(cfs_lun_subdir);
 
     // attempt to teardown any existing mass storage LUN
-    match fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/forced_eject"),
+    match fs::write(cfs_lun.join("forced_eject"),
               b"1") {
         Err(_) => {},
-        Ok(_) => println!("ejected existing lun.0"),
+        Ok(_) => println!("ejected existing lun {}", lun),
     };
     match fs::remove_file(cfs_usb.join("configs/c.1/mass_storage.usb0")) {
         Err(_) => {},
@@ -449,7 +452,7 @@ fn init_musb(lun_dev: &str, configfs: &str) -> io::Result<PathBuf> {
     };
 
     fs::create_dir_all(cfs_usb.join("strings/0x409"))?;
-    fs::create_dir_all(cfs_usb.join("functions/mass_storage.usb0/lun.0"))?;
+    fs::create_dir_all(&cfs_lun)?;
     fs::create_dir_all(cfs_usb.join("configs/c.1/strings/0x409"))?;
     fs::write(cfs_usb.join("idVendor"), b"0x1d6b")?;    // Linux Foundation
     fs::write(cfs_usb.join("idProduct"),
@@ -473,13 +476,11 @@ fn init_musb(lun_dev: &str, configfs: &str) -> io::Result<PathBuf> {
     };
 
     fs::write(cfs_usb.join("functions/mass_storage.usb0/stall"), b"1")?;
-    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/cdrom"), b"0")?;
-    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/ro"), b"0")?;
-    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/nofua"), b"0")?;
-    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/removable"),
-              b"1")?;
-    fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/file"),
-              lun_dev.as_bytes())?;
+    fs::write(cfs_lun.join("cdrom"), b"0")?;
+    fs::write(cfs_lun.join("ro"), b"0")?;
+    fs::write(cfs_lun.join("nofua"), b"0")?;
+    fs::write(cfs_lun.join("removable"), b"1")?;
+    fs::write(cfs_lun.join("file"), lun_dev.as_bytes())?;
     fs::write(cfs_usb.join("configs/c.1/strings/0x409/configuration"),
               b"Config 1: mass-storage")?;
     fs::write(cfs_usb.join("configs/c.1/MaxPower"), b"500")?;
@@ -494,7 +495,7 @@ fn init_musb(lun_dev: &str, configfs: &str) -> io::Result<PathBuf> {
     };
     fs::write(cfs_usb.join("UDC"), MUSB_UDC.as_bytes())?;
 
-    cfs_usb.join("functions/mass_storage.usb0/lun.0").canonicalize()
+    cfs_lun.canonicalize()
 }
 
 struct Kcli {
@@ -783,7 +784,8 @@ fn main() -> io::Result<()> {
     let configfs = env::args().nth(2).unwrap();
     let kcli = parse_kcli(&env::args().nth(3).unwrap())?;
     init_fs(&fatfs_path, &kcli.uuid_to_salt, &kcli.user_size, kcli.firstboot)?;
-    let cfs_usb_lun = init_musb(&fatfs_path, &configfs)?;
+    let mut lun = 0;
+    let cfs_usb_lun = init_musb(&fatfs_path, &configfs, lun)?;
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"heartbeat");
 
     let mut f = match File::open(&fatfs_path) {
@@ -839,15 +841,10 @@ fn main() -> io::Result<()> {
         };
     }
 
-    // Eject regardless of timeout or proper validated conf
-    match fs::write(cfs_usb_lun.join("forced_eject"), b"1") {
-        Ok(_) => println!("configuration device ejected"),
-        Err(e) => println!("skipping eject, sysfs write failed: {}", e),
-    };
-
     if validated_conf.is_none() {
         println!("timed out waiting for valid configuration, attempting shutdown");
-        let _ = fs::write("/proc/sysrq-trigger", b"o");
+        _ = fs::write(cfs_usb_lun.join("forced_eject"), b"1");
+        _ = fs::write("/proc/sysrq-trigger", b"o");
         return Err(Error::from(ErrorKind::InvalidData))
     }
     let validated_conf = validated_conf.unwrap();
@@ -918,7 +915,17 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let _img_usb_lun = init_musb(&img_path, &configfs)?;
+    lun += 1;   // expose image via a different LUN instead of replacing media
+    let _img_usb_lun = init_musb(&img_path, &configfs, lun)?;
+
+    // Eject configuration LUN media after image LUN has been brought up.
+    // This reduces the chance of an initiator I/O error during lioness.txt
+    // fatfs flush.
+    match fs::write(cfs_usb_lun.join("forced_eject"), b"1") {
+        Ok(_) => println!("configuration device ejected"),
+        Err(e) => println!("skipping eject, sysfs write failed: {}", e),
+    };
+
     // TODO expose or cleanup snapshots as requested
 
     Ok(())
