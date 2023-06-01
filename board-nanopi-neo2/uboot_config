@@ -437,7 +437,11 @@ CONFIG_BOOTDELAY=0
 # CONFIG_USE_BOOTARGS is not set
 # CONFIG_BOOTARGS_SUBST is not set
 CONFIG_USE_BOOTCOMMAND=y
-CONFIG_BOOTCOMMAND="setenv bootargs console=ttyS0,115200 earlyprintk; fatload mmc 0 $kernel_addr_r Image; fatload mmc 0 $fdt_addr_r sun50i-h5-nanopi-neo2.dtb; booti $kernel_addr_r - $fdt_addr_r"
+# See genimage.cfg for details on GPT partitioning scheme.
+# For better gen_rand_uuid() entropy, load kernel and DT before GPT write.
+# TODO seed with adc values?
+# GPT uuid must be lower case for test
+CONFIG_BOOTCOMMAND="fatload mmc 0 $kernel_addr_r Image; fatload mmc 0 $fdt_addr_r sun50i-h5-nanopi-neo2.dtb; gpt guid mmc 0 duuid; echo $duuid; if test \"${duuid}\" = \"11017e55-d15c-f125-7b00-7686722c6a20\"; then setenv bootargs lioness.firstboot; gpt write mmc 0 \"uuid_disk=11017e55-d15c-b007-ed00-7686722c6a20;name=boot,bootable,start=1MiB,size=32MiB;name=user,start=33MiB,size=-\"; fi; gpt read mmc 0 parts; setenv bootargs ${bootargs} console=ttyS0,115200 earlyprintk lioness.parts=${parts}; booti $kernel_addr_r - $fdt_addr_r"
 # CONFIG_USE_PREBOOT is not set
 # CONFIG_PREBOOT is not set start"
 CONFIG_DEFAULT_FDT_FILE=""
@@ -727,7 +731,7 @@ CONFIG_CMD_GPIO=y
 # CONFIG_CMD_GPIO_READ is not set
 CONFIG_CMD_GPT=y
 CONFIG_RANDOM_UUID=y
-# CONFIG_CMD_GPT_RENAME is not set
+CONFIG_CMD_GPT_RENAME=y
 # CONFIG_CMD_IDE is not set
 # CONFIG_CMD_IO is not set
 # CONFIG_CMD_IOTRACE is not set
