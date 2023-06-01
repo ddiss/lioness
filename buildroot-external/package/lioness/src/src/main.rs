@@ -148,7 +148,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
 
 fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
     if retry_tout.is_none() {
-        *retry_tout = Some(time::Duration::from_secs(60 * 15)); // first loop
+        *retry_tout = Some(time::Duration::from_secs(60 * 60)); // first loop
         return true;
     }
 
