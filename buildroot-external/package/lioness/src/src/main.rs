@@ -171,6 +171,9 @@ fn main() -> io::Result<()> {
             },
         };
         let root_dir = fs.root_dir();
+        // /lioness.txt is currently used as the config file path, as Android
+        // automatically adds a ".txt" extension to any download flagged
+        // "text/plain".
         let mut file = match root_dir.open_file("lioness.txt") {
             Ok(fs) => fs,
             Err(e) => {
@@ -233,7 +236,7 @@ fn main() -> io::Result<()> {
             .stdout(Stdio::piped())
             .spawn()
             .expect("failed to execute process");
-        {   
+        {
             let mut stdin = proc.stdin.take().unwrap();
             stdin.write_all(conf).expect("Failed to write to stdin");
         }
