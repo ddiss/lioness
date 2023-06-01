@@ -28,6 +28,8 @@ pub const MUSB_UDC: &'static str = match option_env!("MUSB_UDC") {
     None => "musb-hdrc.1.auto",
 };
 
+const BTRFS_SUBVOL_INO: u64 = 256;
+
 fn usage() {
     println!("Usage: lioness <fatfs-device> <configfs-path> <proc-cmdline>");
 }
@@ -688,7 +690,7 @@ fn dmsetup_crypt(partdev: String, key: Vec<u8>) -> io::Result<String> {
     Ok("/dev/dm-0".to_string())
 }
 
-fn btrfs_mkfs(dev: String) -> io::Result<()> {
+fn btrfs_mkfs(dev: &str) -> io::Result<()> {
     let status = Command::new("mkfs.btrfs")
         .args([dev])
         .status()
@@ -702,12 +704,9 @@ fn btrfs_mkfs(dev: String) -> io::Result<()> {
     Ok(())
 }
 
-fn btrfs_mount(dev: String, mntpoint: String) -> io::Result<()> {
-    let mut args = vec!["-t", "btrfs", "-o", "sync,noatime"];
-    args.push(&dev);
-    args.push(&mntpoint);
+fn btrfs_mount(dev: &str, mntpoint: &str) -> io::Result<()> {
     let status = Command::new("mount")
-        .args(args)
+        .args(["-t", "btrfs", "-o", "sync,noatime", dev, mntpoint])
         .status()
         .expect("failed to execute process");
     if !status.success() {
@@ -720,9 +719,8 @@ fn btrfs_mount(dev: String, mntpoint: String) -> io::Result<()> {
 
 // TODO use libbtrfs-util bindings
 fn btrfs_create_subvolume(vol_path: &str) -> io::Result<()> {
-    let args = vec!["subvolume", "create", vol_path];
     let status = Command::new("btrfs")
-        .args(args)
+        .args(["subvolume", "create", vol_path])
         .status()
         .expect("failed to execute process");
     if !status.success() {
@@ -735,9 +733,8 @@ fn btrfs_create_subvolume(vol_path: &str) -> io::Result<()> {
 
 // TODO use libbtrfs-util bindings
 fn btrfs_set_compression(img_path: &str) -> io::Result<()> {
-    let args = vec!["property", "set", img_path, "compression", "zstd"];
     let status = Command::new("btrfs")
-        .args(args)
+        .args(["property", "set", img_path, "compression", "zstd"])
         .status()
         .expect("failed to execute process");
     if !status.success() {
@@ -748,8 +745,12 @@ fn btrfs_set_compression(img_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn btrfs_snapshot(vol_path: &str, snap_name: &String) -> io::Result<()> {
-    let args = vec!["subvolume", "snapshot", "-r", vol_path, snap_name];
+fn btrfs_snapshot(vol_path: &str, snaps_path: &str,
+                  snap_name: &String) -> io::Result<()> {
+    let mut snap = PathBuf::from(&snaps_path);
+    snap.push(snap_name);
+    let s = snap.to_str().ok_or(Error::from(ErrorKind::InvalidData))?;
+    let args = vec!["subvolume", "snapshot", "-r", vol_path, &s];
     let status = Command::new("btrfs")
         .args(args)
         .status()
@@ -859,12 +860,14 @@ fn main() -> io::Result<()> {
     let crypt_dev = dmsetup_crypt("mmcblk0p2".to_string(), validated_conf.key)?;
 
     if kcli.firstboot {
-        btrfs_mkfs(crypt_dev.clone())?;
+        btrfs_mkfs(&crypt_dev)?;
     }
 
-    fs::create_dir_all("/mnt/crypt")?;
-    btrfs_mount(crypt_dev, "/mnt/crypt".to_string())?;
+    let mnt_path = "/mnt/crypt";
+    fs::create_dir_all(&mnt_path)?;
+    btrfs_mount(&crypt_dev, &mnt_path)?;
     let vol_path = "/mnt/crypt/vol/";
+    let snaps_path = "/mnt/crypt/vol/snaps";
     let img_path = "/mnt/crypt/vol/disk.img";
 
     if kcli.firstboot {
@@ -874,6 +877,7 @@ fn main() -> io::Result<()> {
         };
         if setup_conf.snapshot {
             btrfs_create_subvolume(&vol_path)?;
+            fs::create_dir_all(&snaps_path)?;
         } else {
             fs::create_dir_all(&vol_path)?;
         }
@@ -901,13 +905,12 @@ fn main() -> io::Result<()> {
             _ => panic!("non unlock conf type for !firstboot"),
         };
         let vol_meta = fs::metadata(&vol_path)?;
-        if vol_meta.ino() == 256 {
-            if btrfs_snapshot(&vol_path, &validated_conf.date).is_err() {
-                println!("snapshot creation failed!");
-                // ignore snapshot creation errors
-            } else {
-                println!("snapshot {} created", validated_conf.date);
-            }
+        if vol_meta.ino() == BTRFS_SUBVOL_INO {
+            match btrfs_snapshot(&vol_path, &snaps_path, &validated_conf.date) {
+                // ignore snapshot creation errors for now
+                Err(e) => println!("snapshot creation failed: {}", e),
+                Ok(_) => println!("snapshot {} created", validated_conf.date),
+            };
         }
 
         if manage {
