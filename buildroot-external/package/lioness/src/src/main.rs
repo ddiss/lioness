@@ -311,6 +311,7 @@ fn init_fs(fatfs_dev: &str, uuid_to_salt: &str, user_part_size: &str,
         false => "unlock.html",
     };
     let mut file = root_dir.create_file(fname)?;
+    file.write_all(include_bytes!("setup.html.head.template"))?;
     file.write_all(include_bytes!("setup.html.pre_js.template"))?;
     write!(file, "const template_uboot_salt = new Uint8Array({});\n",
            uuid_to_salt)?;
@@ -897,7 +898,8 @@ mod tests {
         let mut buf = vec![];
         f.read_to_end(&mut buf).expect("failed to read html");
         assert!(buf.starts_with(b"<!doctype html>"));
-        const SALT_OFF: usize = include_bytes!("setup.html.pre_js.template").len();
+        const SALT_OFF: usize = include_bytes!("setup.html.head.template").len()
+                                + include_bytes!("setup.html.pre_js.template").len();
         let mut salt_js = String::from("const template_uboot_salt = new Uint8Array(");
         salt_js.push_str(uuid_salt);
         salt_js.push_str(");\n");
@@ -940,7 +942,8 @@ mod tests {
         let mut buf = vec![];
         f.read_to_end(&mut buf).expect("failed to read html");
         assert!(buf.starts_with(b"<!doctype html>"));
-        const SALT_OFF: usize = include_bytes!("setup.html.pre_js.template").len();
+        const SALT_OFF: usize = include_bytes!("setup.html.head.template").len()
+                                + include_bytes!("setup.html.pre_js.template").len();
         let mut salt_js = String::from("const template_uboot_salt = new Uint8Array(");
         salt_js.push_str(uuid_salt);
         salt_js.push_str(");\n");
