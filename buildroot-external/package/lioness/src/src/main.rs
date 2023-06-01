@@ -36,6 +36,15 @@ struct Conf {
     key: Vec<u8>,
     salt: Vec<u8>,
     date: String,
+    conft: ConfType,
+}
+
+enum ConfType {
+    Setup(SetupConf),
+    Unlock(bool),   // manage: bool
+}
+
+struct SetupConf {
     img_size: u64,
     snapshot: bool,
     compression: bool,
@@ -53,7 +62,7 @@ fn from_bool(v: &[u8]) -> Option<bool> {
     };  // TODO macroize?
 }
 
-fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
+fn parse_setup_conf(conf_buf: &[u8]) -> Option<Conf> {
     let mut key: Option<Vec<u8>> = None;
     let mut salt: Option<Vec<u8>> = None;
     let (mut date, mut snap, mut compr, mut format) = (None, None, None, None);
@@ -170,7 +179,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
                 };
             },
             [ unknown @ .. ] => {
-                println!("unexpected config entry: {}", String::from_utf8_lossy(unknown));
+                println!("unexpected setup config entry: {}", String::from_utf8_lossy(unknown));
                 return None;
             },
         }
@@ -184,10 +193,12 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
             key: key.unwrap(),
             salt: salt.unwrap(),
             date: date.unwrap(),
-            img_size: img_size.unwrap(),
-            snapshot: snap.unwrap(),
-            compression: compr.unwrap(),
-            exfat_format: format.unwrap()
+            conft: ConfType::Setup(SetupConf{
+                img_size: img_size.unwrap(),
+                snapshot: snap.unwrap(),
+                compression: compr.unwrap(),
+                exfat_format: format.unwrap(),
+            }),
         })
 }
 
@@ -262,7 +273,7 @@ fn parse_conf_payload(buf: &mut [u8]) -> io::Result<Conf> {
             None => return Err(Error::from(ErrorKind::InvalidData)),
         };
 
-        return match parse_digested_conf(&conf_notrail) {
+        return match parse_setup_conf(&conf_notrail) {
             Some(c) => {
                 println!("user configuration integrity checked and validated");
                 Ok(c)
@@ -762,7 +773,11 @@ fn main() -> io::Result<()> {
     let img_path = "/mnt/crypt/vol/disk.img";
 
     if kcli.firstboot {
-        if validated_conf.snapshot {
+        let setup_conf = match validated_conf.conft {
+            ConfType::Setup(s) => s,
+            _ => panic!("non setup conf type for firstboot"),
+        };
+        if setup_conf.snapshot {
             btrfs_create_subvolume(&vol_path)?;
         } else {
             fs::create_dir_all(&vol_path)?;
@@ -777,12 +792,12 @@ fn main() -> io::Result<()> {
                                           .create(true)
                                           .truncate(false)
                                           .open(&img_path)?;
-            f.set_len(validated_conf.img_size)?;
+            f.set_len(setup_conf.img_size)?;
         }
-        if validated_conf.compression {
+        if setup_conf.compression {
             btrfs_set_compression(&img_path)?;
         }
-        if validated_conf.exfat_format {
+        if setup_conf.exfat_format {
             exfat_mkfs(&img_path)?;
         }
     } else {
@@ -1005,10 +1020,14 @@ digest = SHA-256:eec12eaea4ac05447df33657a4cf27ba965003d20fba432baa3968d7e93baf4
         assert_eq!(str::from_utf8(&conf.salt).unwrap(),
                    "74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2");
         assert_eq!(conf.date, "2023-05-17T20:49:17.335Z");
-        assert_eq!(conf.img_size, 54670659);
-        assert_eq!(conf.snapshot, true);
-        assert_eq!(conf.compression, false);
-        assert_eq!(conf.exfat_format, true);
+        let setup_conf = match conf.conft {
+            ConfType::Setup(s) => s,
+            _ => panic!("non setup conf type for firstboot"),
+        };
+        assert_eq!(setup_conf.img_size, 54670659);
+        assert_eq!(setup_conf.snapshot, true);
+        assert_eq!(setup_conf.compression, false);
+        assert_eq!(setup_conf.exfat_format, true);
 
         // digest mismatch
         fs::write(&tf, b"payload = LionessFirstboot1
