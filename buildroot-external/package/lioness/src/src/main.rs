@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0
+// Copyright (C) 2023 SUSE LLC
+
 use std::fs::File;
 use std::io::SeekFrom;
 use std::io::{self, prelude::*};
@@ -77,7 +80,8 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
                 }
                 salt = Some(val.to_vec());
             },
-            [b's', b'n', b'a', b'p', b's', b'h', b'o', b't', b' ', b'=', b' ', val @ .. ] => {
+            [b's', b'n', b'a', b'p', b's', b'h', b'o', b't',
+             b' ', b'=', b' ', val @ .. ] => {
                 if snap.is_some() {
                     println!("invalid: snap set multiple times");
                     return None;
@@ -87,7 +91,8 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
                     None => return None,
                 };
             },
-            [b'c', b'o', b'm', b'p', b'r', b'e', b's', b's', b'i', b'o', b'n', b' ', b'=', b' ', val @ .. ] => {
+            [b'c', b'o', b'm', b'p', b'r', b'e', b's', b's', b'i', b'o', b'n',
+             b' ', b'=', b' ', val @ .. ] => {
                 if compr.is_some() {
                     println!("invalid: compr set multiple times");
                     return None;
@@ -118,7 +123,13 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
         return None;
     }
 
-    Some(Conf{ key: key?, salt: salt?, snapshot: snap?, compression: compr?, exfat_format: format? })
+    Some(Conf{
+            key: key.unwrap(),
+            salt: salt.unwrap(),
+            snapshot: snap.unwrap(),
+            compression: compr.unwrap(),
+            exfat_format: format.unwrap()
+        })
 }
 
 fn validate_retry(retry_tout: &mut Option<time::Duration>) -> bool {
