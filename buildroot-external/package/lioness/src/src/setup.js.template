@@ -66,6 +66,7 @@ async function submitIni() {
   let ini = `payload = LionessFirstboot1
 key = ${keyHex}
 salt = ${saltHex}
+date = ${new Date().toISOString()}
 snapshot = ${document.getElementById('snapshot').checked}
 compression = ${document.getElementById('compr').checked}
 format = ${document.getElementById('format').checked}\n`;

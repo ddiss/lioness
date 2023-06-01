@@ -35,6 +35,7 @@ fn usage() {
 struct Conf {
     key: Vec<u8>,
     salt: Vec<u8>,
+    date: String,
     snapshot: bool,
     compression: bool,
     exfat_format: bool,
@@ -54,7 +55,7 @@ fn from_bool(v: &[u8]) -> Option<bool> {
 fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
     let mut key: Option<Vec<u8>> = None;
     let mut salt: Option<Vec<u8>> = None;
-    let (mut snap, mut compr, mut format) = (None, None, None);
+    let (mut date, mut snap, mut compr, mut format) = (None, None, None, None);
     let mut payload_seen = false;
 
     // XXX not standard ini! We strictly require the format that was written by
@@ -95,6 +96,23 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
                 }
                 salt = Some(val.to_vec());
             },
+            [b'd', b'a', b't', b'e', b' ', b'=', b' ', val @ .. ]  => {
+                if date.is_some() {
+                    println!("invalid: date set multiple times");
+                    return None;
+                }
+                if val.len() != 24 {
+                    println!("invalid: date length {}", val.len());
+                    return None;
+                }
+                date = match String::from_utf8(val.to_vec()) {
+                    Err(_) => {
+                        println!("bad date string");
+                        return None;
+                    },
+                    Ok(d) => Some(d),
+                };
+            },
             [b's', b'n', b'a', b'p', b's', b'h', b'o', b't',
              b' ', b'=', b' ', val @ .. ] => {
                 if snap.is_some() {
@@ -133,7 +151,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
             },
         }
     }
-    if key.is_none() || salt.is_none() || snap.is_none() || compr.is_none() || format.is_none() {
+    if key.is_none() || salt.is_none() || date.is_none() || snap.is_none() || compr.is_none() || format.is_none() {
         println!("not all expected config keys present");
         return None;
     }
@@ -141,6 +159,7 @@ fn parse_digested_conf(conf_buf: &[u8]) -> Option<Conf> {
     Some(Conf{
             key: key.unwrap(),
             salt: salt.unwrap(),
+            date: date.unwrap(),
             snapshot: snap.unwrap(),
             compression: compr.unwrap(),
             exfat_format: format.unwrap()
@@ -830,10 +849,11 @@ mod tests {
         fs::write(&tf, b"payload = LionessFirstboot1
 key = 4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0
 salt = 74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2
+date = 2023-05-17T20:49:17.335Z
 snapshot = true
 compression = false
 format = true
-digest = SHA-256:e6e0f6ad96d8863df2f3fec343d2c7371cb43804cf3c29389bc591162a8f1f0e")
+digest = SHA-256:8d287d3e3d5abcb66e6e79139a7c82addc468dbfcd8d1b5e494d20fa16880b69")
             .expect("failed to write conf file");
         let mut pl = fs::read(&tf).expect("read failed");
         let conf = parse_conf_payload(&mut pl)
@@ -842,6 +862,7 @@ digest = SHA-256:e6e0f6ad96d8863df2f3fec343d2c7371cb43804cf3c29389bc591162a8f1f0
                    "4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0");
         assert_eq!(str::from_utf8(&conf.salt).unwrap(),
                    "74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2");
+        assert_eq!(conf.date, "2023-05-17T20:49:17.335Z");
         assert_eq!(conf.snapshot, true);
         assert_eq!(conf.compression, false);
         assert_eq!(conf.exfat_format, true);
