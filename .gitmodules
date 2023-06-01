@@ -1,6 +1,3 @@
 [submodule "buildroot"]
 	path = buildroot
 	url = https://git.buildroot.net/buildroot
-[submodule "package/softfido/mod"]
-	path = buildroot-external/package/softfido/mod
-	url = https://github.com/ellerh/softfido
