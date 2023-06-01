@@ -14,7 +14,7 @@ BR2_ROOTFS_POST_SCRIPT_ARGS="-c $(TOPDIR)/../board-nanopi-neo2/genimage.cfg"
 BR2_ROOTFS_OVERLAY="$(TOPDIR)/../src/"
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.1.11"
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.1.13"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(TOPDIR)/../board-nanopi-neo2/linux-6.1.config"
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
@@ -28,15 +28,6 @@ BR2_PACKAGE_DOSFSTOOLS=y
 BR2_PACKAGE_DOSFSTOOLS_MKFS_FAT=y
 BR2_PACKAGE_EXFATPROGS=y
 BR2_PACKAGE_BTRFS_PROGS=y
-# both softhsm2 and softfido are disabled for now, until I've resolved a few
-# issues or found alternatives:
-# - softhsm2 pulls in openssl *and* libstdc++, making it a huge dependency
-# - softfido depends on rust-pkcs11, which is deprecated (see
-#   https://github.com/ellerh/softfido/issues/4 )
-# - rust-pkcs11 depends on an old libloading version which refuses to cross
-#   compile under buildroot
-# BR2_PACKAGE_SOFTHSM2 is not set
-# BR2_PACKAGE_SOFTFIDO is not set
 BR2_PACKAGE_LIONESS=y
 BR2_EXTERNAL="$(TOPDIR)/../buildroot-external/"
 BR2_TARGET_ROOTFS_CPIO=y
