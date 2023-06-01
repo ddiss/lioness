@@ -11,6 +11,7 @@ use std::{thread, time};
 use std::env;
 use std::os::unix;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::process::{Command,Stdio};
 use std::path::PathBuf;
 use std::str;
@@ -580,6 +581,35 @@ fn btrfs_mount(dev: String, compression: bool, mntpoint: String) -> io::Result<(
     Ok(())
 }
 
+// TODO use libbtrfs-util bindings
+fn btrfs_create_subvolume(vol_path: &str) -> io::Result<()> {
+    let args = vec!["subvolume", "create", vol_path];
+    let status = Command::new("btrfs")
+        .args(args)
+        .status()
+        .expect("failed to execute process");
+    if !status.success() {
+        println!("btrfs snapshot failed");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    Ok(())
+}
+
+fn btrfs_snapshot(vol_path: &str, snap_name: &String) -> io::Result<()> {
+    let args = vec!["subvolume", "snapshot", "-r", vol_path, snap_name];
+    let status = Command::new("btrfs")
+        .args(args)
+        .status()
+        .expect("failed to execute process");
+    if !status.success() {
+        println!("btrfs snapshot failed");
+        return Err(Error::from(ErrorKind::InvalidData));
+    }
+
+    Ok(())
+}
+
 fn exfat_mkfs(dev: &PathBuf) -> io::Result<()> {
     let status = Command::new("mkfs.exfat")
         .args([dev])
@@ -683,14 +713,17 @@ fn main() -> io::Result<()> {
         btrfs_mkfs(crypt_dev.clone())?;
     }
 
-    fs::create_dir_all(PathBuf::from("/mnt/crypt"))?;
+    fs::create_dir_all("/mnt/crypt")?;
     btrfs_mount(crypt_dev, validated_conf.compression, "/mnt/crypt".to_string())?;
+    let vol_path = "/mnt/crypt/vol/";
+    let img_path = PathBuf::from("/mnt/crypt/vol/disk.img");
 
-    let mut vol_path = PathBuf::from("/mnt/crypt/vol");
-    // XXX should use btrfs subvol instead here?
-    fs::create_dir_all(&vol_path)?; // TODO firstboot only
-    vol_path.push("disk.img");
     if kcli.firstboot {
+        if validated_conf.snapshot {
+            btrfs_create_subvolume(&vol_path)?;
+        } else {
+            fs::create_dir_all(&vol_path)?;
+        }
 
         // XXX use partition size as volume size for now - in future we should
         // allow for fine grained over/under provisioning. Compression and
@@ -700,17 +733,25 @@ fn main() -> io::Result<()> {
                                           .read(true)
                                           .create(true)
                                           .truncate(false)
-                                          .open(&vol_path)?;
+                                          .open(&img_path)?;
             f.set_len(10 * 1024 * 1024 * 1024)?;
         }
         if validated_conf.exfat_format {
-            exfat_mkfs(&vol_path)?;
+            exfat_mkfs(&img_path)?;
+        }
+    } else {
+        let vol_meta = fs::metadata(&vol_path)?;
+        if vol_meta.ino() == 256 {
+            if btrfs_snapshot(&vol_path, &validated_conf.date).is_err() {
+                println!("snapshot creation failed!");
+                // ignore snapshot creation errors
+            } else {
+                println!("snapshot {} created", validated_conf.date);
+            }
         }
     }
 
-    // TODO snapshot
-
-    let _vol_usb_lun = init_musb(&vol_path, &configfs)?;
+    let _img_usb_lun = init_musb(&img_path, &configfs)?;
 
 
     // TODO rest of app
