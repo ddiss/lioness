@@ -50,7 +50,8 @@ async function submitIni() {
     pass.select();
     return;
   }
-  const salt = window.crypto.getRandomValues(new Uint8Array(24));
+  // XXX template_uboot_salt is set by lioness based on random partition uuids
+  const salt = template_uboot_salt;
   let keyHex;
   try {
     const key = await genKey(pw, salt);
