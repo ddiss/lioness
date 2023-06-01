@@ -589,10 +589,12 @@ fn btrfs_mkfs(dev: String) -> io::Result<()> {
 }
 
 fn btrfs_mount(dev: String, compression: bool, mntpoint: String) -> io::Result<()> {
-    let mut args = vec!["-t", "btrfs"];
+    let mut opts = String::from("sync,noatime");
     if compression {
-        args.extend(["-o", "compress-force=zstd"]);
+        opts.push_str(",compress-force=zstd");
     }
+    let mut args = vec!["-t", "btrfs", "-o"];
+    args.push(&opts);
     args.push(&dev);
     args.push(&mntpoint);
     let status = Command::new("mount")
