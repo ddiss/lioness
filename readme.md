@@ -39,13 +39,13 @@ automatically detected and validated, when saved to `lioness.txt`.
 
 Functionality to initialize and unlock the dm-crypt storage area has not yet
 been finalized. In addition to that, there is a long list of desired features:
-- store salt in GPT uuid(?)
-- mkfs.btrfs dm-crypt area
-- mkfs.exfat file-on-btrfs
-- on open: handle snapshots (reflink file)
-- expose file-on-btrfs via USB
+- store salt in GPT uuid: done, although logic needs to come out of bootloader
+- mkfs.btrfs dm-crypt area: done
+- mkfs.exfat file-on-btrfs: done
+- on open: handle snapshots (reflink file): done, but can't use snaps yet
+- expose file-on-btrfs via USB: done
 - raw dm-crypt option for those who don't want thin provisioning / snapshots
-- FIDO2 / webauthn using softfido or an alternative
+- FIDO2 / webauthn using openSK
 - OS image update from static website
 - test, test, test!
 - support for other boards
@@ -62,4 +62,4 @@ alongside an ssh server which can be accessed with root/root credentials.
 Thanks to SUSE for allowing me to work on this project as part of
 [Hack Week 22](https://hackweek.opensuse.org/22/projects/usb-security-key-running-embedded-linux).
 Thanks to sunxi mainline Linux and u-boot contributors.
-Thanks to FriendlyArm for providing some NanoPi hardware free of charge.
+Thanks to FriendlyArm for donating some NanoPi hardware.
