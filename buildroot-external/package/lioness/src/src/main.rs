@@ -328,7 +328,7 @@ fn init_musb(lun_dev: &PathBuf, configfs: &str) -> io::Result<PathBuf> {
     let cfs_usb = PathBuf::from(configfs).join("usb_gadget/confs");
 
     // attempt to teardown any existing mass storage LUN
-    match fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/removable"),
+    match fs::write(cfs_usb.join("functions/mass_storage.usb0/lun.0/forced_eject"),
               b"1") {
         Err(_) => {},
         Ok(_) => println!("ejected existing lun.0"),
