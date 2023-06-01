@@ -649,6 +649,7 @@ fn main() -> io::Result<()> {
         let _ = fs::write("/proc/sysrq-trigger", b"o");
         return Err(Error::from(ErrorKind::InvalidData))
     }
+    let validated_conf = validated_conf.unwrap();
 
     let _ = fs::write(PathBuf::from(STATUS_LED_PATH).join("trigger"), b"none");
 
@@ -656,13 +657,45 @@ fn main() -> io::Result<()> {
     // still be locally mounted for testing.
     fs::remove_file(fatfs_path)?;
 
+    // FIXME hardcoded device/partition
+    let crypt_dev = dmsetup_crypt("mmcblk0p2".to_string(), validated_conf.key)?;
+
+    if kcli.firstboot {
+        btrfs_mkfs(crypt_dev.clone())?;
+    }
+
+    fs::create_dir_all(PathBuf::from("/mnt/crypt"))?;
+    btrfs_mount(crypt_dev, validated_conf.compression, "/mnt/crypt".to_string())?;
+
+    let mut vol_path = PathBuf::from("/mnt/crypt/vol");
+    // XXX should use btrfs subvol instead here?
+    fs::create_dir_all(&vol_path)?; // TODO firstboot only
+    vol_path.push("disk.img");
+    if kcli.firstboot {
+
+        // XXX use partition size as volume size for now - in future we should
+        // allow for fine grained over/under provisioning. Compression and
+        // snapshots will complicate any provisioning UI significantly.
+        {
+            let f = fs::OpenOptions::new().write(true)
+                                          .read(true)
+                                          .create(true)
+                                          .truncate(false)
+                                          .open(&vol_path)?;
+            f.set_len(10 * 1024 * 1024 * 1024)?;
+        }
+        if validated_conf.exfat_format {
+            exfat_mkfs(&vol_path)?;
+        }
+    }
+
+    // TODO snapshot
+
+    let _vol_usb_lun = init_musb(&vol_path, &configfs)?;
+
+
     // TODO rest of app
-    // - store salt (in GPT uuid?)
-    // - open dm-crypt dev
-    // - mkfs.btrfs
-    // - mkfs.exfat file-on-btrfs
     // - on open: hand snapshots (reflink file)
-    // - expose file-on-btrfs via USB
     // - FIDO2
     // - unit tests!
     Ok(())
