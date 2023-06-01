@@ -1,0 +1,14 @@
+  <body>
+  <form><fieldset>
+    <legend>Unlock Password</legend>
+    <input type="password" placeholder="Password" id="pass" minlength="8" required>
+    <p id='pw_invalid'>Please ensure 8 characters or more in length.</p>
+  </fieldset></form>
+
+  <p>
+    To unlock, save <i>lioness.txt</i> to the connected <i>lioness</i> USB drive.
+  </p>
+  <input type="submit" id="submit" value="Save" onclick="submitIni();">
+  <p id="sublog" />
+
+  <script type="text/javascript">
