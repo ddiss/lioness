@@ -1,7 +1,10 @@
 const pass = document.getElementById('pass');
 pass.addEventListener('change', (e) => { validatePw(); });
-const cnfm = document.getElementById('confirm');
-cnfm.addEventListener('change', (e) => { validatePw(); });
+const cnfm = template_is_firstboot ? document.getElementById('confirm') : pass;
+if (template_is_firstboot) {
+  cnfm.addEventListener('change', (e) => { validatePw(); });
+}
+
 function log(l) {
   document.getElementById('sublog').innerHTML += `${l}<br>`;
 }
@@ -63,14 +66,19 @@ async function submitIni() {
   }
   const saltArray = Array.from(salt);
   const saltHex = saltArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-  let ini = `payload = LionessFirstboot1
-key = ${keyHex}
+  let ini = `key = ${keyHex}
 salt = ${saltHex}
-date = ${new Date().toISOString()}
+date = ${new Date().toISOString()}`
+  if (template_is_firstboot) {
+    ini = `payload = LionessFirstboot1\n` + ini + `
 img_size = ${template_user_part_size}
 snapshot = ${document.getElementById('snapshot').checked}
 compression = ${document.getElementById('compr').checked}
 format = ${document.getElementById('format').checked}\n`;
+  } else {
+    ini = `payload = LionessUnlock1\n` + ini + `
+manage = false\n`; // future. manage snapshots, etc.
+  }
 
   log(`+ generating configuration`);
   const encoded = new TextEncoder().encode(ini);
