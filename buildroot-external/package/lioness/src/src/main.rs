@@ -202,9 +202,96 @@ fn parse_setup_conf(conf_buf: &[u8]) -> Option<Conf> {
         })
 }
 
+fn parse_unlock_conf(conf_buf: &[u8]) -> Option<Conf> {
+    let mut key: Option<Vec<u8>> = None;
+    let mut salt: Option<Vec<u8>> = None;
+    let (mut date, mut manage) = (None, None);
+    let mut payload_seen = false;
+
+    for l in conf_buf.split(|c| matches!(c, b'\n')) {
+        match l {
+            [b'p', b'a', b'y', b'l', b'o', b'a', b'd', b' ', b'=', b' ',
+             b'L', b'i', b'o', b'n', b'e', b's', b's',
+             b'U', b'n', b'l', b'o', b'c', b'k', b'1'] => {
+                if payload_seen {
+                    println!("invalid: payload set multiple times");
+                    return None;
+                }
+                payload_seen = true;
+            },
+            [b'k', b'e', b'y', b' ', b'=', b' ', val @ .. ] => {
+                if key.is_some() {
+                    println!("invalid: key set multiple times");
+                    return None;
+                }
+                if val.len() != 64 {
+                    println!("invalid: key length {}", val.len());
+                    return None;
+                }
+                key = Some(val.to_vec());
+            },
+            [b's', b'a', b'l', b't', b' ', b'=', b' ', val @ .. ]  => {
+                if salt.is_some() {
+                    println!("invalid: salt set multiple times");
+                    return None;
+                }
+                if val.len() != 64 {
+                    println!("invalid: salt length {}", val.len());
+                    return None;
+                }
+                salt = Some(val.to_vec());
+            },
+            [b'd', b'a', b't', b'e', b' ', b'=', b' ', val @ .. ]  => {
+                if date.is_some() {
+                    println!("invalid: date set multiple times");
+                    return None;
+                }
+                if val.len() != 24 {
+                    println!("invalid: date length {}", val.len());
+                    return None;
+                }
+                date = match String::from_utf8(val.to_vec()) {
+                    Err(_) => {
+                        println!("bad date string");
+                        return None;
+                    },
+                    Ok(d) => Some(d),
+                };
+            },
+            [b'm', b'a', b'n', b'a', b'g', b'e', b' ', b'=', b' ', val @ .. ] => {
+                if manage.is_some() {
+                    println!("invalid: manage set multiple times");
+                    return None;
+                }
+                manage = match from_bool(val) {
+                    Some(b) => Some(b),
+                    None => return None,
+                };
+            },
+            [ unknown @ .. ] => {
+                println!("unexpected unlock config entry: {}",
+                         String::from_utf8_lossy(unknown));
+                return None;
+            },
+        }
+    }
+    if key.is_none() || salt.is_none() || date.is_none() || manage.is_none() {
+        println!("not all expected config keys present");
+        return None;
+    }
+
+    Some(Conf{
+            key: key.unwrap(),
+            salt: salt.unwrap(),
+            date: date.unwrap(),
+            conft: ConfType::Unlock(manage.unwrap()),
+        })
+}
+
+
 // returns a Conf if found and validated. ErrorKind::NotFound means that a valid
 // conf payload wasn't found (retry). Any other error means don't retry.
-fn parse_conf_payload(buf: &mut [u8]) -> io::Result<Conf> {
+fn parse_conf_payload(buf: &mut [u8], firstboot: bool) -> io::Result<Conf> {
         // value suffix differs for firstboot setup and unlock configs
         let payload_hdr = b"payload = Lioness";
         if buf.starts_with(payload_hdr) {
@@ -273,14 +360,21 @@ fn parse_conf_payload(buf: &mut [u8]) -> io::Result<Conf> {
             None => return Err(Error::from(ErrorKind::InvalidData)),
         };
 
-        return match parse_setup_conf(&conf_notrail) {
+        let parsed_conf;
+        if firstboot {
+            parsed_conf = parse_setup_conf(&conf_notrail);
+        } else {
+            parsed_conf = parse_unlock_conf(&conf_notrail);
+        }
+
+        match parsed_conf {
             Some(c) => {
                 println!("user configuration integrity checked and validated");
                 Ok(c)
             },
             // XXX abort on invalid (but SHA validated) conf for now
             None => Err(Error::from(ErrorKind::InvalidData)),
-        };
+        }
 }
 
 // set a timeout on first call. subsequent calls subtract sleep time from tout
@@ -734,7 +828,7 @@ fn main() -> io::Result<()> {
             },
         };
 
-        validated_conf = match parse_conf_payload(&mut buf) {
+        validated_conf = match parse_conf_payload(&mut buf, kcli.firstboot) {
             Ok(c) => Some(c),
             Err(ref e) if e.kind() == ErrorKind::NotFound => None, // retry
             Err(e) => return Err(e),    // non-retriable 
@@ -1013,7 +1107,8 @@ format = true
 digest = SHA-256:eec12eaea4ac05447df33657a4cf27ba965003d20fba432baa3968d7e93baf4a")
             .expect("failed to write conf file");
         let mut pl = fs::read(&tf).expect("read failed");
-        let conf = parse_conf_payload(&mut pl)
+        let conf = parse_conf_payload(&mut pl,
+                                      true) // firstboot
             .expect("failed to parse conf payload");
         assert_eq!(str::from_utf8(&conf.key).unwrap(),
                    "4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0");
@@ -1039,19 +1134,42 @@ format = true
 digest = SHA-256:fffffffffffffffffff3fec343d2c7371cb43804cf3c29389bc591162a8f1f0e")
             .expect("failed to write conf file");
         let mut pl = fs::read(&tf).expect("read failed");
-        assert!(parse_conf_payload(&mut pl).is_err());
+        assert!(parse_conf_payload(&mut pl, true).is_err());
 
-        // bad payload header (checked before digest)
+        // bad payload header
         fs::write(&tf, b"payload = LionessLastboot
 key = 4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0
 salt = 74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2
 snapshot = true
 compression = false
 format = true
-digest = SHA-256:e6e0f6ad96d8863df2f3fec343d2c7371cb43804cf3c29389bc591162a8f1f0e")
+digest = SHA-256:73da283c2797463de39d43153bcbc5929e4026bdf2e201b0e1088ae09e4f80c2")
             .expect("failed to write conf file");
         let mut pl = fs::read(&tf).expect("read failed");
-        assert!(parse_conf_payload(&mut pl).is_err());
+        assert!(parse_conf_payload(&mut pl, true).is_err());
+
+        // unlock config (expected for firstboot=false)
+        fs::write(&tf, b"payload = LionessUnlock1
+key = 4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0
+salt = 74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2
+date = 2023-05-17T20:49:17.335Z
+manage = false
+digest = SHA-256:f6a1689ff46e2f3c1ea6750aa1d466f248637b3d988e8c952e1c4ad6cbb7ddc8")
+            .expect("failed to write conf file");
+        let mut pl = fs::read(&tf).expect("read failed");
+        let conf = parse_conf_payload(&mut pl,
+                                      false) // firstboot
+            .expect("failed to parse conf payload");
+        assert_eq!(str::from_utf8(&conf.key).unwrap(),
+                   "4e7f0992a0828e0a5cb8f3bf13f957cd76b08b765a9efb0c968ef88b0b1e59a0");
+        assert_eq!(str::from_utf8(&conf.salt).unwrap(),
+                   "74337b9f3e304cdb8b03d0e8bbec83fc6e95385d24264bbdbb9106e6c39f0cb2");
+        assert_eq!(conf.date, "2023-05-17T20:49:17.335Z");
+        let manage = match conf.conft {
+            ConfType::Unlock(m) => m,
+            _ => panic!("non unlock conf type with firstboot=false"),
+        };
+        assert_eq!(manage, false);
 
         fs::remove_file(tf).expect("failed to remove tmpfile");
         fs::remove_dir(t).expect("failed to remove tmpdir");
